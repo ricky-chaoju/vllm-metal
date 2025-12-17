@@ -150,10 +150,19 @@ class TestMetalPlatform:
 
     def test_get_attn_backend_cls(self):
         """Test getting attention backend class."""
-        from vllm_metal.attention import MetalAttentionBackend
+        import torch
 
-        cls = MetalPlatform.get_attn_backend_cls()
-        assert cls == MetalAttentionBackend
+        cls = MetalPlatform.get_attn_backend_cls(
+            selected_backend=None,
+            head_size=64,
+            dtype=torch.float16,
+            kv_cache_dtype="auto",
+            block_size=16,
+            use_mla=False,
+            has_sink=False,
+            use_sparse=False,
+        )
+        assert cls == "vllm_metal.v1.attention.backends.mps_attn.MPSAttentionBackend"
 
     def test_get_device_communicator_cls(self):
         """Test getting communicator class."""

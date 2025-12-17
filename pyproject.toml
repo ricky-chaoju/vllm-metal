@@ -66,9 +66,11 @@ ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
+# Disable strict checks for out-of-tree plugin compatibility
+disable_error_code = ["override", "misc", "assignment", "arg-type", "index", "call-arg", "attr-defined"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -131,15 +131,22 @@ class MetalPlatform(Platform):
     @classmethod
     def check_and_update_config(cls, vllm_config: "VllmConfig") -> None:
         """Check and update vLLM configuration for Metal backend."""
+        from vllm.config import CompilationMode
 
         model_config = vllm_config.model_config
         cache_config = vllm_config.cache_config
         parallel_config = vllm_config.parallel_config
+        compilation_config = vllm_config.compilation_config
 
         # Validate platform availability
         available, error = check_mps_availability()
         if not available:
             raise RuntimeError(f"Metal/MPS backend not available: {error}")
+
+        # Set default block size if not specified
+        if cache_config.block_size is None:
+            cache_config.block_size = 16
+            logger.info("Metal backend: Using block_size=16 for KV cache")
 
         # MPS doesn't support tensor parallelism
         if parallel_config.tensor_parallel_size > 1:
@@ -156,20 +163,23 @@ class MetalPlatform(Platform):
             )
 
         # Set the worker class for Metal platform
-        # Use CPU worker as base since MPS uses similar patterns
         if parallel_config.worker_cls == "auto":
-            parallel_config.worker_cls = "vllm.v1.worker.cpu_worker.CPUWorker"
+            parallel_config.worker_cls = "vllm_metal.v1.metal_worker.MetalWorker"
 
         # Force eager mode if configured
         if VLLM_METAL_EAGER_MODE:
             model_config.enforce_eager = True
             logger.info("Metal backend: Using eager mode")
 
-        # Adjust KV cache dtype if needed
-        if cache_config.cache_dtype == "auto":
-            # Default to float16 for MPS
-            cache_config.cache_dtype = "float16"
-            logger.info("Metal backend: Using float16 for KV cache")
+        # Disable torch.compile - MPS doesn't support inductor backend
+        # The inductor backend uses compile_mps_shader which is not available
+        compilation_config.mode = CompilationMode.NONE
+        compilation_config.cudagraph_capture_sizes = []
+        logger.info("Metal backend: Disabled torch.compile (not supported on MPS)")
+
+        # Note: Leave cache_dtype as "auto" - the model dtype will be used
+        # MPS supports float16 and bfloat16
+        logger.info(f"Metal backend: Using KV cache dtype={cache_config.cache_dtype}")
 
         # Log configuration
         logger.info(
@@ -199,11 +209,30 @@ class MetalPlatform(Platform):
             )
 
     @classmethod
-    def get_attn_backend_cls(cls):
-        """Get the attention backend class for Metal."""
-        from vllm_metal.attention import MetalAttentionBackend
+    def get_attn_backend_cls(
+        cls,
+        selected_backend,
+        head_size: int,
+        dtype,
+        kv_cache_dtype,
+        block_size: int,
+        use_mla: bool,
+        has_sink: bool,
+        use_sparse: bool,
+        attn_type=None,
+    ) -> str:
+        """Get the attention backend class path for Metal.
 
-        return MetalAttentionBackend
+        For MPS/Metal, we use a custom MPS attention backend that uses
+        PyTorch's scaled_dot_product_attention which is supported on MPS.
+        """
+        if use_mla:
+            raise NotImplementedError("MLA is not supported on MPS/Metal.")
+        if use_sparse:
+            raise NotImplementedError("Sparse Attention is not supported on MPS/Metal.")
+
+        # Use our custom MPS attention backend
+        return "vllm_metal.v1.attention.backends.mps_attn.MPSAttentionBackend"
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:
