@@ -54,7 +54,7 @@ download_and_install_wheel() {
 
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  trap 'rm -rf "$tmp_dir"' EXIT
+  trap "rm -rf '$tmp_dir'" EXIT
 
   echo ""
   echo "Downloading wheel..."
@@ -67,8 +67,53 @@ download_and_install_wheel() {
 
   success "Downloaded wheel"
 
+  # Install vllm-metal base package first
   if ! uv pip install --upgrade "$wheel_path"; then
     error "Failed to install ${package_name}."
+    exit 1
+  fi
+
+  # Install vllm separately with --no-deps to avoid pulling in CUDA dependencies
+  # that don't work on macOS/Apple Silicon
+  echo ""
+  echo "Installing vllm (without CUDA dependencies)..."
+  if ! uv pip install --upgrade --no-deps vllm; then
+    error "Failed to install vllm."
+    exit 1
+  fi
+
+  # Install vllm's macOS-compatible dependencies
+  if ! uv pip install --upgrade \
+    msgspec \
+    cloudpickle \
+    prometheus-client \
+    fastapi \
+    uvicorn \
+    pydantic \
+    pillow \
+    prometheus_fastapi_instrumentator \
+    tiktoken \
+    lm-format-enforcer \
+    outlines \
+    typing_extensions \
+    filelock \
+    py-cpuinfo \
+    aiohttp \
+    openai \
+    einops \
+    importlib_metadata \
+    mistral_common \
+    pyyaml \
+    requests \
+    tqdm \
+    sentencepiece \
+    compressed-tensors \
+    gguf \
+    partial-json-parser \
+    blake3 \
+    cbor2 \
+    pyzmq; then
+    error "Failed to install vllm dependencies."
     exit 1
   fi
 }
@@ -124,6 +169,15 @@ main() {
   fi
 
   download_and_install_wheel "$wheel_url" "$package_name"
+
+  echo ""
+  success "Installation complete!"
+  echo ""
+  echo "To use vllm, activate the virtual environment:"
+  echo "  source .venv/bin/activate"
+  echo ""
+  echo "Or add the venv to your PATH:"
+  echo "  export PATH=\"\$PWD/.venv/bin:\$PATH\""
 }
 
 main "$@"
