@@ -39,11 +39,11 @@ ensure_uv() {
 ensure_venv() {
   if [ ! -d ".venv" ]; then
     section "Creating virtual environment"
-    uv venv .venv --python 3.12
+    uv venv "$1" --python 3.12
   fi
 
   # shellcheck source=/dev/null
-  source .venv/bin/activate
+  source "$1/bin/activate"
 }
 
 # Get repository root directory
@@ -60,7 +60,7 @@ install_dev_deps() {
 # Full development environment setup
 setup_dev_env() {
   ensure_uv
-  ensure_venv
+  ensure_venv ".venv-vllm-metal"
   install_dev_deps
 }
 

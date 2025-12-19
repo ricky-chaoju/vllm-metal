@@ -21,7 +21,7 @@ vLLM Metal is a plugin that enables vLLM to run on Apple Silicon Macs using MLX 
 ### Quick Install
 
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
 ```
 
 ## Architecture

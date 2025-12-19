@@ -116,7 +116,7 @@ main() {
     exit 1
   fi
 
-  ensure_venv
+  ensure_venv "$HOME/.venv-vllm-metal"
 
   local vllm_v="0.13.0"
   local url_base="https://github.com/vllm-project/vllm/releases/download"
