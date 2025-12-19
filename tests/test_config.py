@@ -3,7 +3,12 @@
 
 import os
 
-from vllm_metal.config import MetalConfig, get_config, reset_config
+from vllm_metal.config import (
+    AUTO_MEMORY_FRACTION,
+    MetalConfig,
+    get_config,
+    reset_config,
+)
 
 
 class TestMetalConfig:
@@ -38,7 +43,8 @@ class TestMetalConfig:
         """Test default configuration values."""
         config = MetalConfig.from_env()
 
-        assert config.memory_fraction == 0.9
+        assert config.memory_fraction == AUTO_MEMORY_FRACTION
+        assert config.is_auto_memory is True
         assert config.use_mlx is True
         assert config.mlx_device == "gpu"
         assert config.block_size == 16
@@ -76,3 +82,32 @@ class TestMetalConfig:
         # After reset, we get a new config instance
         # (but with same values since env vars haven't changed)
         assert config1 is not config2
+
+    def test_auto_memory_fraction(self) -> None:
+        """Test that 'auto' is parsed as AUTO_MEMORY_FRACTION."""
+        os.environ["VLLM_METAL_MEMORY_FRACTION"] = "auto"
+
+        config = MetalConfig.from_env()
+
+        assert config.memory_fraction == AUTO_MEMORY_FRACTION
+        assert config.is_auto_memory is True
+
+    def test_auto_memory_fraction_case_insensitive(self) -> None:
+        """Test that 'AUTO' and 'Auto' are also accepted."""
+        for value in ["AUTO", "Auto", "AuTo"]:
+            reset_config()
+            os.environ["VLLM_METAL_MEMORY_FRACTION"] = value
+
+            config = MetalConfig.from_env()
+
+            assert config.memory_fraction == AUTO_MEMORY_FRACTION
+            assert config.is_auto_memory is True
+
+    def test_is_auto_memory_false_for_numeric(self) -> None:
+        """Test that is_auto_memory is False for numeric values."""
+        os.environ["VLLM_METAL_MEMORY_FRACTION"] = "0.5"
+
+        config = MetalConfig.from_env()
+
+        assert config.memory_fraction == 0.5
+        assert config.is_auto_memory is False

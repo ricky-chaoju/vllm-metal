@@ -5,22 +5,36 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+# Sentinel value indicating auto memory calculation
+AUTO_MEMORY_FRACTION = -1.0
+
 
 @dataclass
 class MetalConfig:
     """Configuration for vLLM Metal plugin."""
 
-    memory_fraction: float
+    memory_fraction: float  # -1.0 means "auto" (calculate minimal needed)
     use_mlx: bool
     mlx_device: Literal["gpu", "cpu"]
     block_size: int
     debug: bool
 
+    @property
+    def is_auto_memory(self) -> bool:
+        """Check if memory fraction is set to auto mode."""
+        return self.memory_fraction == AUTO_MEMORY_FRACTION
+
     @classmethod
     def from_env(cls) -> "MetalConfig":
         """Load configuration from environment variables."""
+        memory_fraction_str = os.environ.get("VLLM_METAL_MEMORY_FRACTION", "auto")
+        if memory_fraction_str.lower() == "auto":
+            memory_fraction = AUTO_MEMORY_FRACTION
+        else:
+            memory_fraction = float(memory_fraction_str)
+
         return cls(
-            memory_fraction=float(os.environ.get("VLLM_METAL_MEMORY_FRACTION", "0.9")),
+            memory_fraction=memory_fraction,
             use_mlx=os.environ.get("VLLM_METAL_USE_MLX", "1") == "1",
             mlx_device=os.environ.get("VLLM_MLX_DEVICE", "gpu"),  # type: ignore[arg-type]
             block_size=int(os.environ.get("VLLM_METAL_BLOCK_SIZE", "16")),

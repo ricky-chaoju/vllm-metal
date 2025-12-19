@@ -124,6 +124,68 @@ class MetalWorker(WorkerBase):
         """Load the model onto the Metal device."""
         self.model_runner.load_model()
 
+        # In auto mode, set MLX memory limit to prevent unbounded growth
+        if self.metal_config.is_auto_memory:
+            self._set_auto_memory_limit()
+
+    def _get_model_memory_usage(self) -> int:
+        """Get current model memory usage from MLX.
+
+        Returns:
+            Memory usage in bytes
+        """
+        # Force evaluation of any pending computations
+        mx.eval(mx.array([0]))
+
+        # Get active memory usage - try new API first, then deprecated
+        if hasattr(mx, "get_active_memory"):
+            return mx.get_active_memory()
+        if hasattr(mx, "metal") and hasattr(mx.metal, "get_active_memory"):
+            return mx.metal.get_active_memory()
+
+        # Fallback: estimate from model config if available
+        if hasattr(self, "model_runner") and self.model_runner is not None:
+            model_config = self.model_config
+            hidden_size = getattr(model_config, "hidden_size", 4096)
+            num_layers = getattr(model_config, "num_hidden_layers", 32)
+            # Rough parameter count estimate
+            params = hidden_size * hidden_size * 4 * num_layers
+            return params * 2
+
+        return 0
+
+    def _set_auto_memory_limit(self) -> None:
+        """Set MLX memory limit based on auto calculation.
+
+        This prevents MLX from using unbounded memory in auto mode.
+        """
+        # Get model memory after loading
+        model_memory = self._get_model_memory_usage()
+
+        # Calculate KV cache memory needed for max_model_len
+        block_size_bytes = self.get_cache_block_size_bytes()
+        block_size_tokens = self.metal_config.block_size
+        max_model_len = self.model_config.max_model_len
+
+        min_blocks = (max_model_len + block_size_tokens - 1) // block_size_tokens
+        min_blocks = int(min_blocks * 1.1)  # 10% safety buffer
+        kv_cache_memory = min_blocks * block_size_bytes
+
+        # Total memory limit: model + KV cache + 20% overhead
+        memory_limit = int((model_memory + kv_cache_memory) * 1.2)
+
+        # Set MLX memory limit
+        if hasattr(mx, "set_memory_limit"):
+            mx.set_memory_limit(memory_limit)
+            logger.info(
+                f"Auto mode: set MLX memory limit to {memory_limit / 1e9:.2f}GB "
+                f"(model={model_memory / 1e9:.2f}GB, kv_cache={kv_cache_memory / 1e9:.2f}GB)"
+            )
+        else:
+            logger.warning(
+                "mx.set_memory_limit not available, memory may grow unbounded"
+            )
+
     def determine_available_memory(self) -> int:
         """Determine available memory for KV cache.
 
@@ -132,9 +194,46 @@ class MetalWorker(WorkerBase):
         """
         import psutil
 
-        # Use configured fraction of system memory
         total_memory = psutil.virtual_memory().total
-        available = int(total_memory * self.metal_config.memory_fraction * 0.5)
+
+        # Handle auto memory mode
+        if self.metal_config.is_auto_memory:
+            # Get actual model memory usage
+            model_memory = self._get_model_memory_usage()
+
+            # Get block size for minimal cache calculation
+            block_size_bytes = self.get_cache_block_size_bytes()
+            block_size_tokens = self.metal_config.block_size
+
+            # Calculate minimum blocks needed to handle at least one request
+            # at max_model_len (vLLM requires this minimum)
+            max_model_len = self.model_config.max_model_len
+            min_blocks = (max_model_len + block_size_tokens - 1) // block_size_tokens
+            # Add a small buffer for safety (e.g., 10% more blocks)
+            min_blocks = int(min_blocks * 1.1)
+
+            min_cache_memory = min_blocks * block_size_bytes
+
+            # Add 20% overhead buffer for MLX operations
+            overhead_factor = 1.2
+            minimal_needed = int((model_memory + min_cache_memory) * overhead_factor)
+
+            # Calculate effective memory fraction
+            effective_fraction = minimal_needed / total_memory
+
+            logger.info(
+                f"Auto memory mode: model={model_memory / 1e9:.2f}GB, "
+                f"max_model_len={max_model_len}, min_blocks={min_blocks}, "
+                f"min_cache={min_cache_memory / 1e9:.2f}GB, "
+                f"total_needed={minimal_needed / 1e9:.2f}GB, "
+                f"effective_fraction={effective_fraction:.3f}"
+            )
+
+            # Return just the cache portion for KV cache allocation
+            available = min_cache_memory
+        else:
+            # Use configured fraction of system memory
+            available = int(total_memory * self.metal_config.memory_fraction * 0.5)
 
         logger.info(f"Metal available memory for KV cache: {available / 1e9:.2f} GB")
         return available

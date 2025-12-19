@@ -9,6 +9,7 @@ import mlx.core as mx
 import torch
 from mlx_lm import load as mlx_load
 from mlx_lm import stream_generate
+from mlx_lm.models.cache import make_prompt_cache
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -26,6 +27,15 @@ class SamplerOutput:
 
     token_ids: list[int]
     logprobs: list[float] | None = None
+
+
+@dataclass
+class RequestState:
+    """State for an ongoing request with KV cache."""
+
+    token_ids: list[int]
+    cache: Any  # MLX prompt cache
+    generated_tokens: int = 0
 
 
 class MetalModelRunner:
@@ -59,6 +69,9 @@ class MetalModelRunner:
         # KV cache state
         self.kv_cache_initialized = False
         self.num_kv_cache_blocks = 0
+
+        # Request state cache for incremental decoding
+        self._request_states: dict[str, RequestState] = {}
 
     def load_model(self) -> None:
         """Load the model using MLX."""
@@ -195,7 +208,9 @@ class MetalModelRunner:
     def execute_model(
         self, scheduler_output: SchedulerOutput
     ) -> ModelRunnerOutput | None:
-        """Execute model inference.
+        """Execute model inference with incremental decoding.
+
+        Uses MLX prompt cache for efficient token-by-token generation.
 
         Args:
             scheduler_output: Scheduler output with batch information
@@ -210,82 +225,82 @@ class MetalModelRunner:
         req_ids: list[str] = []
         req_id_to_index: dict[str, int] = {}
         sampled_tokens: list[list[int]] = []
-        num_tokens = 0
 
-        # Track request state for cached requests (ongoing generation)
-        if not hasattr(self, "_request_cache"):
-            self._request_cache: dict[str, list[int]] = {}
-
-        # Process new requests
+        # Process new requests (prefill phase)
         for new_req in scheduler_output.scheduled_new_reqs:
             req_id = new_req.req_id
             token_ids = new_req.prompt_token_ids or []
-            num_scheduled = scheduler_output.num_scheduled_tokens.get(
-                req_id, len(token_ids)
-            )
-
-            # Cache the token ids for this request
-            self._request_cache[req_id] = list(token_ids)
 
             req_ids.append(req_id)
             req_id_to_index[req_id] = len(req_ids) - 1
-            num_tokens += num_scheduled
 
-            # Run forward pass on prompt
             if token_ids:
-                input_ids = mx.array([token_ids], dtype=mx.int32)
-                logits = self.model(input_ids)
-                mx.eval(logits)
+                # Create a new prompt cache for this request
+                cache = make_prompt_cache(self.model)
 
-                # Get next token (greedy sampling for now)
+                # Prefill: process the entire prompt with cache
+                input_ids = mx.array([token_ids], dtype=mx.int32)
+                logits = self.model(input_ids, cache=cache)
+
+                # Evaluate logits and cache state to materialize them
+                mx.eval(logits)
+                mx.eval([c.state for c in cache])
+
+                # Get next token (greedy sampling)
                 next_token_logits = logits[:, -1, :]
                 next_token = int(mx.argmax(next_token_logits, axis=-1)[0].item())
                 sampled_tokens.append([next_token])
 
-                # Add generated token to cache
-                self._request_cache[req_id].append(next_token)
+                # Store request state with cache for future decoding
+                self._request_states[req_id] = RequestState(
+                    token_ids=list(token_ids) + [next_token],
+                    cache=cache,
+                    generated_tokens=1,
+                )
             else:
                 sampled_tokens.append([0])  # Fallback
 
-        # Process cached requests (continuation)
+        # Process cached requests (decode phase - incremental)
         cached_reqs = scheduler_output.scheduled_cached_reqs
-        for idx, req_id in enumerate(cached_reqs.req_ids):
-            # Get cached tokens and new tokens
-            cached_tokens = self._request_cache.get(req_id, [])
-            new_tokens = (
-                cached_reqs.new_token_ids[idx] if cached_reqs.new_token_ids else []
-            )
-
-            # Update cache with new tokens
-            if new_tokens:
-                cached_tokens.extend(new_tokens)
-                self._request_cache[req_id] = cached_tokens
-
-            num_scheduled = scheduler_output.num_scheduled_tokens.get(req_id, 1)
-
+        for req_id in cached_reqs.req_ids:
             req_ids.append(req_id)
             req_id_to_index[req_id] = len(req_ids) - 1
-            num_tokens += num_scheduled
 
-            # Run forward pass
-            if cached_tokens:
-                input_ids = mx.array([cached_tokens], dtype=mx.int32)
-                logits = self.model(input_ids)
-                mx.eval(logits)
-
-                # Get next token
-                next_token_logits = logits[:, -1, :]
-                next_token = int(mx.argmax(next_token_logits, axis=-1)[0].item())
-                sampled_tokens.append([next_token])
-
-                # Add to cache
-                self._request_cache[req_id].append(next_token)
-            else:
+            # Get stored state
+            state = self._request_states.get(req_id)
+            if state is None:
+                # Fallback if no cached state (shouldn't happen normally)
                 sampled_tokens.append([0])
+                continue
+
+            # Use the last token for incremental decoding
+            last_token = state.token_ids[-1] if state.token_ids else 0
+
+            # Incremental decode: only process the single new token with cache
+            input_ids = mx.array([[last_token]], dtype=mx.int32)
+            logits = self.model(input_ids, cache=state.cache)
+            mx.eval(logits)
+
+            # Get next token (greedy sampling)
+            next_token_logits = logits[:, -1, :]
+            next_token = int(mx.argmax(next_token_logits, axis=-1)[0].item())
+            sampled_tokens.append([next_token])
+
+            # Update state
+            state.token_ids.append(next_token)
+            state.generated_tokens += 1
 
         # Clean up finished requests
         for req_id in scheduler_output.finished_req_ids:
-            self._request_cache.pop(req_id, None)
+            state = self._request_states.pop(req_id, None)
+            if state is not None:
+                # Explicitly delete cache to help MLX release memory
+                del state.cache
+                del state
+
+        # If requests were finished, clear MLX's memory cache
+        if scheduler_output.finished_req_ids:
+            mx.clear_cache()
 
         # Handle empty case
         if not req_ids:

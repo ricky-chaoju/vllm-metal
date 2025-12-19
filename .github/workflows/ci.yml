@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -25,3 +25,20 @@ jobs:
       run: |
         scripts/ci.sh
 
+  test:
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        os: [macos-15]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: CI
+      run: |
+        scripts/test.sh

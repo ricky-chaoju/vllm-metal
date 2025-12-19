@@ -62,6 +62,9 @@ class MetalPlatform(Platform):
         """
         config = get_config()
         total_memory = psutil.virtual_memory().total
+        # In auto mode, report full memory - actual allocation is dynamic
+        if config.is_auto_memory:
+            return total_memory
         return int(total_memory * config.memory_fraction)
 
     @classmethod
@@ -76,6 +79,9 @@ class MetalPlatform(Platform):
         """
         config = get_config()
         available = psutil.virtual_memory().available
+        # In auto mode, report full available memory - actual allocation is dynamic
+        if config.is_auto_memory:
+            return available
         return int(available * config.memory_fraction)
 
     @classmethod

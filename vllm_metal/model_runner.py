@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import mlx.core as mx
 from mlx_lm import load as mlx_load
 from mlx_lm import stream_generate
+from mlx_lm.sample_utils import make_sampler
 
 from vllm_metal.config import get_config
 from vllm_metal.mlx_backend.cache import PagedKVCache
@@ -230,14 +231,18 @@ class MetalModelRunner:
         # Generate tokens using stream_generate
         generated_text = ""
 
+        # Create sampler with temperature
+        sampler = make_sampler(temp=temperature)
+
         for response in stream_generate(
             self.model,
             self.tokenizer,
             prompt=prompt,
             max_tokens=max_tokens,
-            temp=temperature,
+            sampler=sampler,
         ):
-            generated_text = response.text
+            # Accumulate incremental text from each token
+            generated_text += response.text
 
         return generated_text
 

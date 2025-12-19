@@ -82,6 +82,36 @@ class MetalWorker:
 
         logger.info("Model loaded successfully")
 
+    def _get_model_memory_usage(self) -> int:
+        """Get current model memory usage from MLX.
+
+        Returns:
+            Memory usage in bytes
+        """
+        import mlx.core as mx
+
+        # Force evaluation of any pending computations
+        mx.eval(mx.array([0]))
+
+        # Get active memory usage - try new API first, then deprecated
+        if hasattr(mx, "get_active_memory"):
+            return mx.get_active_memory()
+        if hasattr(mx, "metal") and hasattr(mx.metal, "get_active_memory"):
+            return mx.metal.get_active_memory()
+
+        # Fallback: estimate from model config
+        if self.model_runner is not None and self.model_runner.model_config is not None:
+            # Rough estimate: assume 2 bytes per parameter (float16)
+            # This is a very rough estimate
+            config = self.model_runner.model_config
+            hidden_size = config.get("hidden_size", 4096)
+            num_layers = config.get("num_hidden_layers", 32)
+            # Rough parameter count estimate
+            params = hidden_size * hidden_size * 4 * num_layers  # Very rough
+            return params * 2
+
+        return 0
+
     def determine_num_available_blocks(self) -> tuple[int, int]:
         """Determine the number of available KV cache blocks.
 
@@ -91,10 +121,8 @@ class MetalWorker:
         import psutil
 
         total_memory = psutil.virtual_memory().total
-        available_memory = int(total_memory * self.config.memory_fraction)
 
-        # Estimate block memory usage
-        # This is a rough estimate - actual usage depends on model config
+        # Calculate block memory size
         if self.model_runner is not None and self.model_runner.model_config is not None:
             model_config = self.model_runner.model_config
             num_layers = model_config.get("num_hidden_layers", 32)
@@ -121,9 +149,53 @@ class MetalWorker:
             # Default estimate: ~4KB per block
             block_memory = 4096
 
-        # Reserve some memory for model weights and overhead
-        cache_memory = available_memory * 0.5  # Use 50% for cache
+        # Handle auto memory mode
+        if self.config.is_auto_memory:
+            # Get actual model memory usage
+            model_memory = self._get_model_memory_usage()
+
+            # Calculate minimum blocks needed to handle at least one request
+            # at max_model_len (vLLM requires this minimum)
+            max_model_len = 2048  # Default fallback
+            if self.vllm_config is not None:
+                max_model_len = self.vllm_config.model_config.max_model_len
+
+            min_blocks = (
+                max_model_len + self.config.block_size - 1
+            ) // self.config.block_size
+            # Add a small buffer for safety (e.g., 10% more blocks)
+            min_blocks = int(min_blocks * 1.1)
+
+            min_cache_memory = min_blocks * block_memory
+
+            # Add 20% overhead buffer for MLX operations
+            overhead_factor = 1.2
+            minimal_needed = int((model_memory + min_cache_memory) * overhead_factor)
+
+            # Calculate effective memory fraction
+            effective_fraction = minimal_needed / total_memory
+
+            logger.info(
+                f"Auto memory mode: model={model_memory / 1e9:.2f}GB, "
+                f"max_model_len={max_model_len}, min_blocks={min_blocks}, "
+                f"min_cache={min_cache_memory / 1e9:.2f}GB, "
+                f"total_needed={minimal_needed / 1e9:.2f}GB, "
+                f"effective_fraction={effective_fraction:.3f}"
+            )
+
+            available_memory = minimal_needed
+            # In auto mode, use most of the allocated memory for cache
+            # since we already calculated minimal needed
+            cache_memory = min_cache_memory
+        else:
+            available_memory = int(total_memory * self.config.memory_fraction)
+            # Reserve some memory for model weights and overhead
+            cache_memory = available_memory * 0.5  # Use 50% for cache
+
         num_blocks = int(cache_memory / block_memory)
+
+        # Ensure at least 1 block
+        num_blocks = max(1, num_blocks)
 
         # Metal has unified memory, so all blocks are "GPU" blocks
         return (num_blocks, 0)
