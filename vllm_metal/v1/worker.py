@@ -98,8 +98,10 @@ class MetalWorker(WorkerBase):
             mx.set_default_device(mx.Device(device_type))
             logger.info(f"MLX device set to: {mx.default_device()}")
 
-        # Set CPU as PyTorch device for interop
-        # self.device = torch.device("cpu")
+        # Use MetalPlatform.get_torch_device() to properly support MPS when available.
+        # This ensures consistency with the platform's device selection logic and
+        # allows using MPS for PyTorch operations (like vLLM's sampler) when supported,
+        # while falling back to CPU if MPS is not available.
         self.device = MetalPlatform.get_torch_device(0)
         logger.info(f"PyTorch device set to: {self.device}")
 
