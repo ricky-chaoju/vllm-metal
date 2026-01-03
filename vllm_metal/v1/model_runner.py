@@ -68,6 +68,24 @@ def _mlx_greedy_sample(logits: mx.array) -> mx.array:
     return mx.argmax(logits, axis=-1)
 
 
+def _create_request_generator(
+    device: torch.device,
+    sampling_params: SamplingParams,
+) -> torch.Generator | None:
+    """Create a per-request generator for seeded sampling.
+
+    vLLM uses a per-request generator only when an explicit seed is provided.
+    For unseeded sampling, vLLM relies on the global RNG state.
+    """
+    if sampling_params.seed is None:
+        return None
+    if sampling_params.temperature < 1e-5:
+        return None
+    generator = torch.Generator(device=device)
+    generator.manual_seed(sampling_params.seed)
+    return generator
+
+
 @dataclass
 class SamplerOutput:
     """Output from the sampler."""
@@ -83,6 +101,7 @@ class RequestState:
     token_ids: list[int]
     cache: list[KVCache]  # Per-layer KV caches
     sampling_params: SamplingParams  # Sampling parameters for this request
+    generator: torch.Generator | None = None
     generated_tokens: int = 0
 
 
@@ -325,12 +344,15 @@ class MetalModelRunner:
         self,
         sampling_params_list: list[SamplingParams],
         output_token_ids: list[list[int]],
+        generators: dict[int, torch.Generator] | None = None,
     ) -> SamplingMetadata:
         """Create SamplingMetadata from per-request SamplingParams.
 
         Args:
             sampling_params_list: List of SamplingParams, one per request
             output_token_ids: List of output token IDs per request (for penalties)
+            generators: Optional per-request torch generators keyed by batch index.
+                If omitted, sampler falls back to the global RNG for those entries.
 
         Returns:
             SamplingMetadata for the batch
@@ -349,15 +371,7 @@ class MetalModelRunner:
             for sp in sampling_params_list
         )
 
-        # Create generators for random sampling
-        generators = {}
-        for i, sp in enumerate(sampling_params_list):
-            if sp.temperature >= 1e-5:
-                # Generator must be on the same device as the tensors (MPS or CPU)
-                gen = torch.Generator(device=self.device)
-                if sp.seed is not None:
-                    gen.manual_seed(sp.seed)
-                generators[i] = gen
+        generators = generators or {}
 
         # top_k: pass None if all values indicate no filtering
         # -1 = vLLM default (no filtering), 0 = OpenAI API convention (no filtering)
@@ -434,6 +448,7 @@ class MetalModelRunner:
         req_id: str,
         token_ids: list[int],
         sampling_params: SamplingParams,
+        generator: torch.Generator | None = None,
     ) -> tuple[int, list[KVCache]]:
         """Process a single prefill request.
 
@@ -479,7 +494,12 @@ class MetalModelRunner:
             logits_torch = mlx_to_torch(
                 last_logits.astype(mx.float32), device=self.device
             )
-            metadata = self._make_sampling_metadata([sampling_params], [[]])
+            generators = {} if generator is None else {0: generator}
+            metadata = self._make_sampling_metadata(
+                [sampling_params],
+                [[]],
+                generators=generators,
+            )
             output = self._sampler.forward(logits_torch, metadata)
             next_token = int(output.sampled_token_ids[0, 0].item())
 
@@ -547,11 +567,18 @@ class MetalModelRunner:
             # Slow path: use vLLM sampler for advanced sampling
             mx.eval(next_token_logits)
             output_tokens_list = [state.token_ids for _, state in decode_reqs]
+            generators = {
+                i: state.generator
+                for i, (_, state) in enumerate(decode_reqs)
+                if state.generator is not None
+            }
             logits_torch = mlx_to_torch(
                 next_token_logits.astype(mx.float32), device=self.device
             )
             metadata = self._make_sampling_metadata(
-                sampling_params_list, output_tokens_list
+                sampling_params_list,
+                output_tokens_list,
+                generators=generators,
             )
             output = self._sampler.forward(logits_torch, metadata)
             next_tokens = [
@@ -614,8 +641,11 @@ class MetalModelRunner:
                 logits_torch = mlx_to_torch(
                     last_logits.astype(mx.float32), device=self.device
                 )
+                generators = {} if state.generator is None else {0: state.generator}
                 metadata = self._make_sampling_metadata(
-                    [state.sampling_params], [state.token_ids]
+                    [state.sampling_params],
+                    [state.token_ids],
+                    generators=generators,
                 )
                 output = self._sampler.forward(logits_torch, metadata)
                 next_token = int(output.sampled_token_ids[0, 0].item())
@@ -666,8 +696,12 @@ class MetalModelRunner:
             req_id_to_index[req_id] = len(req_ids) - 1
 
             if token_ids:
+                generator = _create_request_generator(self.device, sampling_params)
                 next_token, cache = self._prefill_single(
-                    req_id, token_ids, sampling_params
+                    req_id,
+                    token_ids,
+                    sampling_params,
+                    generator=generator,
                 )
                 sampled_tokens.append([next_token])
 
@@ -676,6 +710,7 @@ class MetalModelRunner:
                     token_ids=list(token_ids) + [next_token],
                     cache=cache,
                     sampling_params=sampling_params,
+                    generator=generator,
                     generated_tokens=1,
                 )
 

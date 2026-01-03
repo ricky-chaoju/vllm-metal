@@ -5,12 +5,18 @@ import mlx.core as mx
 import numpy as np
 import pytest
 import torch
+from vllm.sampling_params import SamplingParams
 from vllm.utils.torch_utils import make_tensor_with_pad
 from vllm.v1.sample.logits_processor import LogitsProcessors
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler
 
 from vllm_metal.pytorch_backend.tensor_bridge import mlx_to_torch
+from vllm_metal.v1.model_runner import (
+    MetalModelRunner,
+    RequestState,
+    _create_request_generator,
+)
 
 VOCAB_SIZE = 1024
 MAX_NUM_PROMPT_TOKENS = 64
@@ -247,3 +253,43 @@ class TestBatchedPerRequestSampling:
         # Greedy requests (0, 2) should pick the max
         assert output.sampled_token_ids[0, 0].item() == 0
         assert output.sampled_token_ids[2, 0].item() == 20
+
+
+class TestV1SeededSamplingGenerator:
+    def test_seeded_sampling_generator_advances_across_decode_steps(self) -> None:
+        """Seeded sampling should reuse (and advance) a per-request generator."""
+
+        def uniform_logits_model(vocab_size: int):
+            def _model(input_ids: mx.array, cache=None) -> mx.array:  # noqa: ANN001
+                batch_size = int(input_ids.shape[0])
+                return mx.zeros((batch_size, 1, vocab_size), dtype=mx.float32)
+
+            return _model
+
+        vocab_size = 32
+        runner = MetalModelRunner.__new__(MetalModelRunner)
+        runner.device = torch.device("cpu")
+        runner.model_args = {"vocab_size": vocab_size}
+        runner._sampler = Sampler()
+        runner._rust_state_manager = None
+        runner.model = uniform_logits_model(vocab_size)
+
+        sp = SamplingParams(temperature=1.0, seed=123)
+        generator = _create_request_generator(runner.device, sp)
+        assert generator is not None
+
+        state = RequestState(
+            token_ids=[1],
+            cache=[],
+            sampling_params=sp,
+            generator=generator,
+        )
+
+        before = generator.get_state()
+        runner._batched_decode([("r1", state)])
+        after_first = generator.get_state()
+        runner._batched_decode([("r1", state)])
+        after_second = generator.get_state()
+
+        assert not torch.equal(after_first, before)
+        assert not torch.equal(after_second, after_first)
