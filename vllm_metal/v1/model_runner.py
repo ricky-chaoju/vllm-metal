@@ -351,6 +351,8 @@ class MetalModelRunner:
         Args:
             sampling_params_list: List of SamplingParams, one per request
             output_token_ids: List of output token IDs per request (for penalties)
+            generators: Optional per-request torch generators keyed by batch index.
+                If omitted, sampler falls back to the global RNG for those entries.
 
         Returns:
             SamplingMetadata for the batch
@@ -369,16 +371,7 @@ class MetalModelRunner:
             for sp in sampling_params_list
         )
 
-        if generators is None:
-            generators = {}
-
-        # vLLM uses a per-request generator only when an explicit seed is provided.
-        # If a request provides a seed, the caller must supply a persistent
-        # generator so that RNG state advances across decode steps.
-        for i, sp in enumerate(sampling_params_list):
-            if sp.seed is not None and sp.temperature >= 1e-5 and i not in generators:
-                msg = "Seeded sampling requires a per-request generator."
-                raise ValueError(msg)
+        generators = generators or {}
 
         # top_k: pass None if all values indicate no filtering
         # -1 = vLLM default (no filtering), 0 = OpenAI API convention (no filtering)
