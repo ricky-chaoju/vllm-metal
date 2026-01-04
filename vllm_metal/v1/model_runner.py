@@ -16,9 +16,12 @@ from typing import Any
 
 import mlx.core as mx
 import torch
-from mlx_lm import load as mlx_load
+from mlx_lm import load as mlx_lm_load
 from mlx_lm import stream_generate
 from mlx_lm.models.cache import BatchKVCache, KVCache, make_prompt_cache
+
+# mlx_vlm for vision-language models
+from mlx_vlm import load as mlx_vlm_load
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
@@ -169,6 +172,7 @@ class MetalModelRunner:
         self.model: Any = None
         self.tokenizer: Any = None
         self.model_args: dict[str, Any] = {}
+        self._is_vlm: bool = False  # Will be set during model loading
 
         # KV cache state
         self.kv_cache_initialized = False
@@ -191,11 +195,26 @@ class MetalModelRunner:
         # Track finished requests for lazy cache clearing
         self._finished_request_count = 0
 
-    def load_model(self) -> None:
-        """Load the model using MLX with caching for fast repeated loads."""
-        model_name = self.model_config.model
+    def _is_vlm_model(self) -> bool:
+        """Check if the model is a vision-language model (VLM).
 
-        logger.info(f"Loading model: {model_name}")
+        Returns:
+            True if the model is multimodal/VLM, False otherwise
+        """
+        # Check vLLM's multimodal detection
+        if hasattr(self.model_config, "is_multimodal_model"):
+            return self.model_config.is_multimodal_model
+        return False
+
+    def load_model(self) -> None:
+        """Load the model using MLX with caching for fast repeated loads.
+
+        Uses mlx_vlm for vision-language models and mlx_lm for text-only models.
+        """
+        model_name = self.model_config.model
+        is_vlm = self._is_vlm_model()
+
+        logger.info(f"Loading model: {model_name} (VLM: {is_vlm})")
         start_time = time.time()
 
         # Check global cache first for fast repeated loads
@@ -209,11 +228,20 @@ class MetalModelRunner:
                 self._extract_model_args()
                 return
 
-        # Load model and tokenizer using mlx_lm
-        self.model, self.tokenizer = mlx_load(
-            model_name,
-            tokenizer_config={"trust_remote_code": self.model_config.trust_remote_code},
-        )
+        # Load model using appropriate backend
+        if is_vlm:
+            logger.info("Using mlx-vlm for vision-language model")
+            self.model, self.tokenizer = mlx_vlm_load(model_name)
+            self._is_vlm = True
+        else:
+            # Load model and tokenizer using mlx_lm for text-only models
+            self.model, self.tokenizer = mlx_lm_load(
+                model_name,
+                tokenizer_config={
+                    "trust_remote_code": self.model_config.trust_remote_code
+                },
+            )
+            self._is_vlm = False
 
         # Cache for future loads
         with _model_cache_lock:
@@ -224,14 +252,30 @@ class MetalModelRunner:
         logger.info(f"Model loaded in {load_time:.2f}s: {model_name}")
 
     def _extract_model_args(self) -> None:
-        """Extract model configuration from loaded model."""
+        """Extract model configuration from loaded model.
+
+        Handles both text-only models and VLMs (which have nested text_config).
+        """
         if hasattr(self.model, "args"):
             self.model_args = vars(self.model.args)
         elif hasattr(self.model, "config"):
-            if hasattr(self.model.config, "to_dict"):
-                self.model_args = self.model.config.to_dict()
+            config = self.model.config
+            # VLMs often have text config nested inside main config
+            if self._is_vlm and hasattr(config, "text_config"):
+                text_config = config.text_config
+                if hasattr(text_config, "to_dict"):
+                    self.model_args = text_config.to_dict()
+                else:
+                    self.model_args = {
+                        k: getattr(text_config, k)
+                        for k in dir(text_config)
+                        if not k.startswith("_")
+                        and not callable(getattr(text_config, k))
+                    }
+            elif hasattr(config, "to_dict"):
+                self.model_args = config.to_dict()
             else:
-                self.model_args = vars(self.model.config)
+                self.model_args = vars(config)
         else:
             # Fallback: try to get from model attributes
             self.model_args = {
@@ -246,6 +290,24 @@ class MetalModelRunner:
             }
         if self.metal_config.debug:
             logger.info(f"Model args: {self.model_args}")
+
+    def _extract_logits(self, model_output: Any) -> mx.array:
+        """Extract logits from model output.
+
+        Handles both mlx-lm (returns array directly) and mlx-vlm
+        (returns LanguageModelOutput with .logits attribute).
+
+        Args:
+            model_output: Output from model forward pass
+
+        Returns:
+            Logits array
+        """
+        if hasattr(model_output, "logits"):
+            # mlx-vlm returns LanguageModelOutput
+            return model_output.logits
+        # mlx-lm returns logits directly
+        return model_output
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """Get KV cache specification.
@@ -334,8 +396,9 @@ class MetalModelRunner:
         # Run a small dummy inference
         try:
             dummy_tokens = mx.array([[1, 2, 3]], dtype=mx.int32)
-            _ = self.model(dummy_tokens)
-            mx.eval(_)
+            output = self.model(dummy_tokens)
+            logits = self._extract_logits(output)
+            mx.eval(logits)
             logger.info("Model warm-up complete")
         except Exception as e:
             logger.warning(f"Model warm-up failed: {e}")
@@ -461,11 +524,18 @@ class MetalModelRunner:
             Tuple of (next_token, cache)
         """
         # Create a new prompt cache for this request
-        cache = make_prompt_cache(self.model)
+        # For VLMs, use the language_model component; for text models, use model directly
+        cache_model = (
+            self.model.language_model
+            if self._is_vlm and hasattr(self.model, "language_model")
+            else self.model
+        )
+        cache = make_prompt_cache(cache_model)
 
         # Prefill: process the entire prompt with cache
         input_ids = mx.array([token_ids], dtype=mx.int32)
-        logits = self.model(input_ids, cache=cache)
+        model_output = self.model(input_ids, cache=cache)
+        logits = self._extract_logits(model_output)
 
         # Extract last token logits
         last_logits = logits[:, -1, :]
@@ -540,7 +610,8 @@ class MetalModelRunner:
         batched_input = mx.array(last_tokens, dtype=mx.int32)[:, None]
 
         # === SINGLE FORWARD PASS FOR ALL REQUESTS ===
-        logits = self.model(batched_input, cache=batch_cache)
+        model_output = self.model(batched_input, cache=batch_cache)
+        logits = self._extract_logits(model_output)
 
         # Extract next token logits
         next_token_logits = logits[:, -1, :]  # Shape: (batch_size, vocab_size)
@@ -616,7 +687,8 @@ class MetalModelRunner:
             last_token = state.token_ids[-1] if state.token_ids else 0
             input_ids = mx.array([[last_token]], dtype=mx.int32)
 
-            logits = self.model(input_ids, cache=state.cache)
+            model_output = self.model(input_ids, cache=state.cache)
+            logits = self._extract_logits(model_output)
             last_logits = logits[:, -1, :]
 
             # Use native MLX greedy sampling when possible
