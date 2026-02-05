@@ -70,8 +70,9 @@ _MAX_BATCH_SIZE = 64  # Maximum batch size for decode
 # Performance tuning
 _CACHE_CLEAR_INTERVAL = 50  # Clear cache every N finished requests
 
-# Prefix cache configuration
-_PREFIX_CACHE_ENABLED = bool(os.environ.get("VLLM_METAL_PREFIX_CACHE", ""))
+# Prefix cache configuration — enabled by setting VLLM_METAL_PREFIX_CACHE
+# in the environment (any value; unset to disable).
+_PREFIX_CACHE_ENABLED = "VLLM_METAL_PREFIX_CACHE" in os.environ
 _PREFIX_CACHE_DEFAULT_FRACTION = 0.05  # 5% of MLX working set
 
 
@@ -99,10 +100,15 @@ def _get_prefix_cache_max_bytes() -> int:
     else:
         fraction = _PREFIX_CACHE_DEFAULT_FRACTION
 
-    device_info = mx.metal.device_info()
-    total: int = int(device_info.get("max_recommended_working_set_size", 0))
+    fallback_bytes = 8 * 1024 * 1024 * 1024  # 8 GB
+    try:
+        device_info = mx.metal.device_info()
+        total = int(device_info.get("max_recommended_working_set_size", 0))
+    except (AttributeError, RuntimeError):
+        total = 0
+
     if total == 0:
-        total = 8 * 1024 * 1024 * 1024
+        total = fallback_bytes
         logger.warning("Could not get MLX working set size, using 8GB fallback")
 
     max_bytes = int(total * fraction)

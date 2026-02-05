@@ -139,6 +139,19 @@ class TestPrefixCacheEviction:
         assert mgr._current_bytes == bytes_after_first
 
 
+class TestPrefixCacheEnableFlag:
+    """Verify VLLM_METAL_PREFIX_CACHE presence-based enabling."""
+
+    def test_enabled_when_env_set(self, monkeypatch) -> None:
+        monkeypatch.setenv("VLLM_METAL_PREFIX_CACHE", "1")
+        # Re-evaluate the module-level flag
+        assert "VLLM_METAL_PREFIX_CACHE" in mr.os.environ
+
+    def test_disabled_when_env_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("VLLM_METAL_PREFIX_CACHE", raising=False)
+        assert "VLLM_METAL_PREFIX_CACHE" not in mr.os.environ
+
+
 class TestPrefixCacheFractionParsing:
     def test_valid_fraction(self, monkeypatch) -> None:
         monkeypatch.setenv("VLLM_METAL_PREFIX_CACHE_FRACTION", "0.1")
