@@ -72,7 +72,14 @@ _CACHE_CLEAR_INTERVAL = 50  # Clear cache every N finished requests
 
 # Prefix cache configuration — enabled by setting VLLM_METAL_PREFIX_CACHE
 # in the environment (any value; unset to disable).
-_PREFIX_CACHE_ENABLED = "VLLM_METAL_PREFIX_CACHE" in os.environ
+
+
+def _prefix_cache_enabled() -> bool:
+    """Check whether prefix caching is enabled via environment variable."""
+    return "VLLM_METAL_PREFIX_CACHE" in os.environ
+
+
+_PREFIX_CACHE_ENABLED = _prefix_cache_enabled()
 _PREFIX_CACHE_DEFAULT_FRACTION = 0.05  # 5% of MLX working set
 
 
