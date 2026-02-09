@@ -2,6 +2,13 @@
 
 vllm-metal includes OpenAI-compatible Speech-to-Text support built on Whisper. It supports transcription, translation, timestamps, and subtitle output — all running natively on Apple Silicon via MLX.
 
+## Requirements
+
+```bash
+pip install vllm-metal[stt]  # Install audio processing dependencies
+brew install ffmpeg          # Required for audio file loading
+```
+
 ## Quick Start
 
 ```bash

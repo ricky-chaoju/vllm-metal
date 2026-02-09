@@ -9,18 +9,23 @@ import subprocess
 import mlx.core as mx
 import numpy as np
 
-# Whisper audio constants
+# Whisper audio constants (matches OpenAI spec)
 SAMPLE_RATE = 16000
 N_FFT = 400
 HOP_LENGTH = 160
 CHUNK_LENGTH = 30
 N_SAMPLES = CHUNK_LENGTH * SAMPLE_RATE
 N_FRAMES = N_SAMPLES // HOP_LENGTH
-N_MELS = 80
+N_MELS_DEFAULT = 80  # 128 for large-v3
 
 
 def load_audio(file_path: str, sample_rate: int = SAMPLE_RATE) -> mx.array:
-    """Load audio file using ffmpeg."""
+    """Load audio file using ffmpeg (must be in PATH)."""
+    import shutil
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg not found")
+
     cmd = [
         "ffmpeg",
         "-nostdin",
@@ -101,7 +106,7 @@ def _mel_filters(sample_rate: int, n_fft: int, n_mels: int) -> mx.array:
 
 def log_mel_spectrogram(
     audio: str | np.ndarray | mx.array,
-    n_mels: int = N_MELS,
+    n_mels: int = N_MELS_DEFAULT,
 ) -> mx.array:
     """Compute log-Mel spectrogram."""
     if isinstance(audio, str):

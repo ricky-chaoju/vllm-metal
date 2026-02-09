@@ -214,12 +214,10 @@ class MetalPlatform(Platform):
         if config.debug:
             logger.info(f"Metal config: {config}")
 
-        # STT models: copy missing tokenizer files from canonical repo.
-        # preprocessor_config.json excluded (differs by model size).
+        # STT models: set tokenizer path for runtime loading
         if model_config is not None and is_stt_model(model_config.model):
-            cls._ensure_stt_hf_files(model_config.model)
             model_config.tokenizer = model_config.model
-            logger.info("STT model detected — using model path as tokenizer")
+            logger.info("STT model detected")
 
         # Set worker class for Metal
         if parallel_config.worker_cls == "auto":
@@ -247,59 +245,6 @@ class MetalPlatform(Platform):
             f"Metal memory: {total_mem / 1e9:.1f}GB total, "
             f"{available_mem / 1e9:.1f}GB available"
         )
-
-    # HF tokenizer files that vLLM needs but MLX-converted Whisper directories lack.
-    # NOTE: preprocessor_config.json is intentionally excluded — it differs
-    # between model sizes (e.g. large-v3 uses 128 mel bins vs 80 for smaller
-    # models). Models should ship their own or vLLM will use HF defaults.
-    _STT_HF_FILES = (
-        "vocab.json",
-        "merges.txt",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "normalizer.json",
-        "added_tokens.json",
-        "generation_config.json",
-    )
-    # All Whisper sizes share the same tokenizer vocab.
-    _STT_CANONICAL_REPO = "openai/whisper-small"
-
-    @classmethod
-    def _ensure_stt_hf_files(cls, model_path: str) -> None:
-        """Copy missing tokenizer files into *model_path*.
-
-        Only touches files that do not already exist so user overrides
-        are preserved.
-        """
-        from pathlib import Path
-
-        dest = Path(model_path)
-        if not dest.is_dir():
-            return
-
-        missing = [f for f in cls._STT_HF_FILES if not (dest / f).exists()]
-        if not missing:
-            return
-
-        try:
-            import shutil
-
-            from huggingface_hub import hf_hub_download
-
-            for fname in missing:
-                try:
-                    src = hf_hub_download(
-                        repo_id=cls._STT_CANONICAL_REPO, filename=fname
-                    )
-                    shutil.copy2(src, str(dest / fname))
-                    logger.info(f"Copied {fname} into {model_path}")
-                except Exception:
-                    logger.debug(f"Could not fetch {fname} from HF, skipping")
-        except ImportError:
-            logger.warning(
-                "huggingface_hub not available — cannot auto-provision STT files"
-            )
 
     @classmethod
     def get_attn_backend_cls(

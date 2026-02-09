@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -13,56 +14,37 @@ logger = logging.getLogger(__name__)
 # STT model types that can be auto-detected from config.json
 _STT_MODEL_TYPES = {"whisper"}
 
-# Full Whisper language map (100 languages recognised by the tokenizer).
-# fmt: off
-WHISPER_LANGUAGES: dict[str, str] = {
-    "en": "english", "zh": "chinese", "de": "german", "es": "spanish",
-    "ru": "russian", "ko": "korean", "fr": "french", "ja": "japanese",
-    "pt": "portuguese", "tr": "turkish", "pl": "polish", "ca": "catalan",
-    "nl": "dutch", "ar": "arabic", "sv": "swedish", "it": "italian",
-    "id": "indonesian", "hi": "hindi", "fi": "finnish", "vi": "vietnamese",
-    "he": "hebrew", "uk": "ukrainian", "el": "greek", "ms": "malay",
-    "cs": "czech", "ro": "romanian", "da": "danish", "hu": "hungarian",
-    "ta": "tamil", "no": "norwegian", "th": "thai", "ur": "urdu",
-    "hr": "croatian", "bg": "bulgarian", "lt": "lithuanian", "la": "latin",
-    "mi": "maori", "ml": "malayalam", "cy": "welsh", "sk": "slovak",
-    "te": "telugu", "fa": "persian", "lv": "latvian", "bn": "bengali",
-    "sr": "serbian", "az": "azerbaijani", "sl": "slovenian", "kn": "kannada",
-    "et": "estonian", "mk": "macedonian", "br": "breton", "eu": "basque",
-    "is": "icelandic", "hy": "armenian", "ne": "nepali", "mn": "mongolian",
-    "bs": "bosnian", "kk": "kazakh", "sq": "albanian", "sw": "swahili",
-    "gl": "galician", "mr": "marathi", "pa": "punjabi", "si": "sinhala",
-    "km": "khmer", "sn": "shona", "yo": "yoruba", "so": "somali",
-    "af": "afrikaans", "oc": "occitan", "ka": "georgian", "be": "belarusian",
-    "tg": "tajik", "sd": "sindhi", "gu": "gujarati", "am": "amharic",
-    "yi": "yiddish", "lo": "lao", "uz": "uzbek", "fo": "faroese",
-    "ht": "haitian creole", "ps": "pashto", "tk": "turkmen", "nn": "nynorsk",
-    "mt": "maltese", "sa": "sanskrit", "lb": "luxembourgish",
-    "my": "myanmar", "bo": "tibetan", "tl": "tagalog", "mg": "malagasy",
-    "as": "assamese", "tt": "tatar", "haw": "hawaiian", "ln": "lingala",
-    "ha": "hausa", "ba": "bashkir", "jw": "javanese", "su": "sundanese",
-    "yue": "cantonese",
-}
 
-# Officially supported languages (from OpenAI docs) — a subset of the above.
-# Languages in WHISPER_LANGUAGES but not here are accepted with a warning.
-# Reference: https://platform.openai.com/docs/guides/speech-to-text/supported-languages
-ISO639_1_SUPPORTED_LANGS: dict[str, str] = {
-    "af": "afrikaans", "ar": "arabic", "hy": "armenian", "az": "azerbaijani",
-    "be": "belarusian", "bs": "bosnian", "bg": "bulgarian", "ca": "catalan",
-    "zh": "chinese", "hr": "croatian", "cs": "czech", "da": "danish",
-    "nl": "dutch", "en": "english", "et": "estonian", "fi": "finnish",
-    "fr": "french", "gl": "galician", "de": "german", "el": "greek",
-    "he": "hebrew", "hi": "hindi", "hu": "hungarian", "is": "icelandic",
-    "id": "indonesian", "it": "italian", "ja": "japanese", "kn": "kannada",
-    "kk": "kazakh", "ko": "korean", "lv": "latvian", "lt": "lithuanian",
-    "mk": "macedonian", "ms": "malay", "mr": "marathi", "mi": "maori",
-    "ne": "nepali", "no": "norwegian", "fa": "persian", "pl": "polish",
-    "pt": "portuguese", "ro": "romanian", "ru": "russian", "sr": "serbian",
-    "sk": "slovak", "sl": "slovenian", "es": "spanish", "sw": "swahili",
-    "sv": "swedish", "tl": "tagalog", "ta": "tamil", "th": "thai",
-    "tr": "turkish", "uk": "ukrainian", "ur": "urdu", "vi": "vietnamese",
-    "cy": "welsh",
+@lru_cache(maxsize=1)
+def _get_whisper_languages() -> dict[str, str]:
+    """Get Whisper language map from transformers."""
+    try:
+        from transformers.models.whisper.tokenization_whisper import LANGUAGES
+
+        return dict(LANGUAGES)
+    except ImportError:
+        logger.warning("transformers not available, using fallback language list")
+        return {"en": "english"}
+
+
+def get_whisper_languages() -> dict[str, str]:
+    """Get full Whisper language map (100 languages)."""
+    return _get_whisper_languages()
+
+
+def get_supported_languages() -> set[str]:
+    """Get officially supported language codes."""
+    return _OFFICIALLY_SUPPORTED.copy()
+
+
+# Officially supported languages (OpenAI docs subset).
+# fmt: off
+_OFFICIALLY_SUPPORTED = {
+    "af", "ar", "hy", "az", "be", "bs", "bg", "ca", "zh", "hr", "cs", "da",
+    "nl", "en", "et", "fi", "fr", "gl", "de", "el", "he", "hi", "hu", "is",
+    "id", "it", "ja", "kn", "kk", "ko", "lv", "lt", "mk", "ms", "mr", "mi",
+    "ne", "no", "fa", "pl", "pt", "ro", "ru", "sr", "sk", "sl", "es", "sw",
+    "sv", "tl", "ta", "th", "tr", "uk", "ur", "vi", "cy",
 }
 # fmt: on
 
@@ -119,40 +101,27 @@ def validate_language(
 ) -> str | None:
     """Validate and normalise an ISO 639-1 language code.
 
-    Three-tier validation matching upstream vLLM behaviour:
+    Three-tier validation:
+    1. Officially supported codes — accepted silently.
+    2. Known Whisper codes but not official — accepted with debug log.
+    3. Unknown codes — raises ValueError.
 
-    1. Code is in ``ISO639_1_SUPPORTED_LANGS`` — accepted silently.
-    2. Code is in ``WHISPER_LANGUAGES`` but **not** officially supported —
-       accepted with a warning (results may be less accurate).
-    3. Code is unknown — raises ``ValueError``.
-
-    When *code* is ``None``, returns *default* (``"en"`` by default,
-    matching upstream Whisper behaviour).
+    Returns *default* when *code* is None.
     """
     if code is None:
-        if default is not None:
-            logger.warning(
-                "Defaulting to language=%r. Pass the `language` field "
-                "to transcribe audio in a different language.",
-                default,
-            )
         return default
 
     code = code.strip().lower()
+    whisper_langs = get_whisper_languages()
 
-    if code in ISO639_1_SUPPORTED_LANGS:
+    if code in _OFFICIALLY_SUPPORTED:
         return code
 
-    if code in WHISPER_LANGUAGES:
-        logger.warning(
-            "Language %r is not officially supported; results may be "
-            "less accurate. Supported languages: %s",
-            code,
-            ", ".join(sorted(ISO639_1_SUPPORTED_LANGS)),
-        )
+    if code in whisper_langs:
+        logger.debug("Language %r is not officially supported", code)
         return code
 
     raise ValueError(
         f"Unsupported language: {code!r}. Must be one of "
-        f"{', '.join(sorted(ISO639_1_SUPPORTED_LANGS))}."
+        f"{', '.join(sorted(_OFFICIALLY_SUPPORTED))}."
     )

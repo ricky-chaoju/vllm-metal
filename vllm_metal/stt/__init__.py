@@ -2,17 +2,25 @@
 """Speech-to-Text support for vLLM Metal."""
 
 from vllm_metal.stt.config import (
-    ISO639_1_SUPPORTED_LANGS,
     SpeechToTextConfig,
+    get_supported_languages,
+    get_whisper_languages,
     is_stt_model,
     validate_language,
 )
-from vllm_metal.stt.transcribe import TranscriptionResult, load_model, transcribe
+from vllm_metal.stt.transcribe import (
+    TranscriptionResult,
+    WhisperTranscriber,
+    load_model,
+    transcribe,
+)
 
 __all__ = [
-    "ISO639_1_SUPPORTED_LANGS",
     "SpeechToTextConfig",
     "TranscriptionResult",
+    "WhisperTranscriber",
+    "get_supported_languages",
+    "get_whisper_languages",
     "is_stt_model",
     "load_model",
     "transcribe",

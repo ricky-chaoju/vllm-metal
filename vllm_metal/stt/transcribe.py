@@ -30,6 +30,11 @@ from vllm_metal.stt.whisper import WhisperConfig, WhisperModel
 
 logger = logging.getLogger(__name__)
 
+# Whisper decoding constants
+_SEEK_MULTIPLIER = 100  # Whisper uses centiseconds for seek position
+_DEFAULT_SEGMENT_DURATION = 30.0  # Default segment duration when end timestamp missing
+_MAX_PROMPT_TOKENS = 224  # Max tokens for prompt (leave room in 448-token context)
+
 
 @lru_cache(maxsize=4)
 def _get_tokenizer(model_path: str | None = None):
@@ -70,6 +75,89 @@ class TranscriptionResult:
     language: str | None = None
     segments: list[TranscriptionSegment] = field(default_factory=list)
     duration: float = 0.0
+
+
+class WhisperTranscriber:
+    """Whisper transcription handler.
+
+    Owns model, tokenizer, and config for transcription operations.
+    """
+
+    def __init__(
+        self,
+        model: WhisperModel,
+        model_path: str | None = None,
+        config: SpeechToTextConfig | None = None,
+    ):
+        self.model = model
+        self.model_path = model_path
+        self.config = config or SpeechToTextConfig()
+        self._tokenizer = None
+
+    @property
+    def tokenizer(self):
+        if self._tokenizer is None:
+            self._tokenizer = _get_tokenizer(self.model_path)
+        return self._tokenizer
+
+    def transcribe(
+        self,
+        audio: str | np.ndarray | mx.array,
+        language: str | None = None,
+        task: str = "transcribe",
+        prompt: str | None = None,
+        with_timestamps: bool = False,
+    ) -> TranscriptionResult:
+        """Transcribe audio to text."""
+        if isinstance(audio, str):
+            audio = load_audio(audio, sample_rate=SAMPLE_RATE)
+        elif isinstance(audio, np.ndarray):
+            audio = mx.array(audio, mx.float32)
+
+        total_duration = audio_duration(audio, SAMPLE_RATE)
+
+        # Split long audio for both timestamp and non-timestamp modes
+        chunks = split_audio(
+            audio,
+            max_clip_s=self.config.max_audio_clip_s,
+            overlap_s=self.config.overlap_chunk_second,
+            window_size=self.config.min_energy_split_window_size,
+            sample_rate=SAMPLE_RATE,
+        )
+
+        all_segments: list[TranscriptionSegment] = []
+        all_text_parts: list[str] = []
+        seg_id_offset = 0
+
+        for chunk_audio, chunk_start in chunks:
+            features = _encode_chunk(self.model, chunk_audio)
+            output_tokens = _greedy_decode(
+                self.model, features, language, task, prompt,
+                with_timestamps=with_timestamps,
+            )
+
+            if with_timestamps:
+                segments = _extract_segments(output_tokens, chunk_start, seg_id_offset)
+                for seg in segments:
+                    all_segments.append(seg)
+                    all_text_parts.append(seg.text)
+                seg_id_offset += len(segments)
+                # Fallback if no segments extracted
+                if not segments:
+                    text = self.tokenizer.decode(output_tokens, skip_special_tokens=True)
+                    if text.strip():
+                        all_text_parts.append(text.strip())
+            else:
+                text = self.tokenizer.decode(output_tokens, skip_special_tokens=True)
+                if text.strip():
+                    all_text_parts.append(text.strip())
+
+        return TranscriptionResult(
+            text=" ".join(all_text_parts).strip(),
+            language=language,
+            segments=all_segments if with_timestamps else [],
+            duration=total_duration,
+        )
 
 
 def load_model(model_path: str | Path, dtype: mx.Dtype = mx.float16) -> WhisperModel:
@@ -131,10 +219,7 @@ def _encode_prompt(prompt: str | None) -> list[int]:
         return []
     tokenizer = _get_tokenizer()
     prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
-    # Truncate to leave room in the 448-token context window.
-    # Whisper's text context is typically 448 tokens; reserve ~224 for output.
-    max_prompt_len = 224
-    prompt_ids = prompt_ids[-max_prompt_len:]
+    prompt_ids = prompt_ids[-_MAX_PROMPT_TOKENS:]
     return [_get_token_id("<|startofprev|>"), *prompt_ids]
 
 
@@ -144,52 +229,31 @@ def _greedy_decode(
     language: str | None = None,
     task: str = "transcribe",
     prompt: str | None = None,
-    max_tokens: int = 224,
+    with_timestamps: bool = False,
+    max_tokens: int | None = None,
 ) -> list[int]:
-    """Greedy decoding without timestamps."""
+    """Greedy decoding for Whisper.
+
+    Args:
+        model: Whisper model
+        audio_features: Encoded audio features
+        language: Language code (e.g. "en", "zh")
+        task: Task type ("transcribe" or "translate")
+        prompt: Optional prompt for context
+        with_timestamps: If True, allow timestamp tokens in output
+        max_tokens: Max tokens to decode (default: 224 without timestamps, 448 with)
+    """
+    if max_tokens is None:
+        max_tokens = 448 if with_timestamps else _MAX_PROMPT_TOKENS
+
     # Build initial tokens: optional prompt prefix + task header
     prefix = _encode_prompt(prompt)
     prefix.append(_get_token_id("<|startoftranscript|>"))
     if model.is_multilingual:
         prefix.append(_get_token_id(f"<|{language or 'en'}|>"))
         prefix.append(_get_token_id(f"<|{task}|>"))
-    prefix.append(_get_token_id("<|notimestamps|>"))
-
-    eot_token = _get_token_id("<|endoftext|>")
-    tokens = mx.array([prefix], dtype=mx.int32)
-    kv_cache = None
-    output_tokens = []
-
-    for _ in range(max_tokens):
-        logits, kv_cache = model.decode(tokens, audio_features, kv_cache)
-        next_token = int(mx.argmax(logits[:, -1, :], axis=-1).item())
-        if next_token == eot_token:
-            break
-        output_tokens.append(next_token)
-        tokens = mx.array([[next_token]], dtype=mx.int32)
-
-    return output_tokens
-
-
-def _decode_with_timestamps(
-    model: WhisperModel,
-    audio_features: mx.array,
-    language: str | None = None,
-    task: str = "transcribe",
-    prompt: str | None = None,
-    max_tokens: int = 448,
-) -> list[int]:
-    """Greedy decoding *with* timestamp tokens.
-
-    Unlike ``_greedy_decode`` this does **not** prepend
-    ``<|notimestamps|>``, allowing the model to emit ``<|0.00|>`` style
-    timestamp tokens interleaved with text tokens.
-    """
-    prefix = _encode_prompt(prompt)
-    prefix.append(_get_token_id("<|startoftranscript|>"))
-    if model.is_multilingual:
-        prefix.append(_get_token_id(f"<|{language or 'en'}|>"))
-        prefix.append(_get_token_id(f"<|{task}|>"))
+    if not with_timestamps:
+        prefix.append(_get_token_id("<|notimestamps|>"))
 
     eot_token = _get_token_id("<|endoftext|>")
     tokens = mx.array([prefix], dtype=mx.int32)
@@ -246,7 +310,7 @@ def _extract_segments(
                     segments.append(
                         TranscriptionSegment(
                             id=seg_id,
-                            seek=int(seg_start * 100),
+                            seek=int(seg_start * _SEEK_MULTIPLIER),
                             start=round(seg_start + time_offset, 2),
                             end=round(ts + time_offset, 2),
                             text=seg_text,
@@ -266,9 +330,9 @@ def _extract_segments(
             segments.append(
                 TranscriptionSegment(
                     id=seg_id,
-                    seek=int(seg_start * 100),
+                    seek=int(seg_start * _SEEK_MULTIPLIER),
                     start=round(seg_start + time_offset, 2),
-                    end=round(seg_start + time_offset + 30.0, 2),
+                    end=round(seg_start + time_offset + _DEFAULT_SEGMENT_DURATION, 2),
                     text=seg_text,
                     tokens=list(seg_tokens),
                 )
@@ -279,7 +343,8 @@ def _extract_segments(
 
 def _encode_chunk(model: WhisperModel, audio_chunk: mx.array) -> mx.array:
     """Encode a single audio chunk into features."""
-    mel = log_mel_spectrogram(audio_chunk)
+    n_mels = model.config.n_mels
+    mel = log_mel_spectrogram(audio_chunk, n_mels=n_mels)
     mel = pad_or_trim(mel, N_FRAMES, axis=-1)
     if mel.ndim == 2:
         mel = mel[None, ...]
@@ -298,65 +363,6 @@ def transcribe(
     with_timestamps: bool = False,
     stt_config: SpeechToTextConfig | None = None,
 ) -> TranscriptionResult:
-    """Transcribe audio to text.
-
-    File paths are resampled to 16kHz; array inputs must already be 16kHz.
-    """
-    if stt_config is None:
-        stt_config = SpeechToTextConfig()
-
-    # Whisper requires 16kHz audio
-    if isinstance(audio, str):
-        audio = load_audio(audio, sample_rate=SAMPLE_RATE)
-    elif isinstance(audio, np.ndarray):
-        audio = mx.array(audio, mx.float32)
-
-    total_duration = audio_duration(audio, SAMPLE_RATE)
-
-    if not with_timestamps:
-        # Fast path: single chunk, no timestamp tokens
-        features = _encode_chunk(model, audio)
-        output_tokens = _greedy_decode(model, features, language, task, prompt)
-        text = _get_tokenizer().decode(output_tokens, skip_special_tokens=True)
-        return TranscriptionResult(
-            text=text.strip(),
-            language=language,
-            duration=total_duration,
-        )
-
-    # Timestamp path: split long audio and decode with timestamps
-    chunks = split_audio(
-        audio,
-        max_clip_s=stt_config.max_audio_clip_s,
-        overlap_s=stt_config.overlap_chunk_second,
-        window_size=stt_config.min_energy_split_window_size,
-        sample_rate=SAMPLE_RATE,
-    )
-
-    all_segments: list[TranscriptionSegment] = []
-    all_text_parts: list[str] = []
-    seg_id_offset = 0
-
-    for chunk_audio, chunk_start in chunks:
-        features = _encode_chunk(model, chunk_audio)
-        output_tokens = _decode_with_timestamps(model, features, language, task, prompt)
-        segments = _extract_segments(output_tokens, chunk_start, seg_id_offset)
-
-        for seg in segments:
-            all_segments.append(seg)
-            all_text_parts.append(seg.text)
-        seg_id_offset += len(segments)
-
-        # Fallback: if no segments extracted, decode plainly
-        if not segments:
-            text = _get_tokenizer().decode(output_tokens, skip_special_tokens=True)
-            if text.strip():
-                all_text_parts.append(text.strip())
-
-    full_text = " ".join(all_text_parts).strip()
-    return TranscriptionResult(
-        text=full_text,
-        language=language,
-        segments=all_segments,
-        duration=total_duration,
-    )
+    """Transcribe audio to text (delegates to WhisperTranscriber)."""
+    transcriber = WhisperTranscriber(model, config=stt_config)
+    return transcriber.transcribe(audio, language, task, prompt, with_timestamps)

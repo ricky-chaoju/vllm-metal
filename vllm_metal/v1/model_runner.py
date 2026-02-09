@@ -37,6 +37,7 @@ from mlx_vlm import load as mlx_vlm_load
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
+from vllm.tasks import SupportedTask
 from vllm.utils.torch_utils import make_tensor_with_pad
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheConfig, KVCacheSpec
@@ -651,13 +652,8 @@ class MetalModelRunner:
         # mlx-lm returns logits directly
         return model_output
 
-    def get_supported_tasks(self) -> tuple[str, ...]:
-        """Get supported tasks for this model.
-
-        Returns:
-            Tuple of supported task names. STT models support
-            ``("transcription",)``; LLM/VLM models support ``("generate",)``.
-        """
+    def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
+        """Get supported tasks for this model."""
         if self._is_stt:
             return ("transcription",)
         return ("generate",)
@@ -669,14 +665,11 @@ class MetalModelRunner:
             Dictionary mapping attention layer names to KV cache specs.
             STT models return an empty dict (Whisper manages its own KV cache).
         """
-        # STT models manage their own encoder/decoder caches internally.
-        # Return a single dummy spec so vLLM's KVCacheCoordinator doesn't
-        # assert on an empty spec dict.
+        # STT bypasses vLLM's KV cache; return minimal dummy spec
         if self._is_stt:
-            block_size = self.metal_config.block_size
             return {
                 "layers.0.self_attn": FullAttentionSpec(
-                    block_size=block_size,
+                    block_size=self.metal_config.block_size,
                     num_kv_heads=1,
                     head_size=64,
                     dtype=torch.float16,
@@ -1316,30 +1309,7 @@ class MetalModelRunner:
     def _execute_stt(
         self, scheduler_output: SchedulerOutput
     ) -> ModelRunnerOutput | None:
-        """Execute STT inference: Whisper encoder → decoder loop.
-
-        Audio arrives pre-processed by vLLM's multi-modal pipeline
-        (WhisperFeatureExtractor) in ``mm_features``.  The runner
-        converts the mel features to MLX, runs the encoder, then
-        greedy-decodes the full transcription in a single scheduler
-        step so that the request is immediately finished.
-
-        Note:
-            Each request is decoded independently (no batching) because
-            Whisper's cross-attention requires per-request audio features.
-            This is acceptable for STT workloads where requests typically
-            arrive one at a time and latency matters more than throughput.
-
-        Args:
-            scheduler_output: Scheduler output with batch information
-
-        Returns:
-            Model runner output with transcription tokens
-
-        Raises:
-            No exceptions are raised; encoding/decoding failures result
-            in an empty transcription (EOT token only) for that request.
-        """
+        """Execute STT inference (greedy decoding only)."""
         try:
             from vllm_metal.stt.transcribe import _get_token_id
 
@@ -1359,6 +1329,26 @@ class MetalModelRunner:
             req_id = new_req.req_id
             req_ids.append(req_id)
             req_id_to_index[req_id] = len(req_ids) - 1
+
+            # Validate sampling params (STT only supports greedy decoding)
+            sp = new_req.sampling_params
+            if sp is not None:
+                unsupported = []
+                if sp.temperature > 1e-5:
+                    unsupported.append(f"temperature={sp.temperature}")
+                if sp.top_k > 0:
+                    unsupported.append(f"top_k={sp.top_k}")
+                if sp.top_p < 1.0:
+                    unsupported.append(f"top_p={sp.top_p}")
+                if sp.frequency_penalty != 0:
+                    unsupported.append(f"frequency_penalty={sp.frequency_penalty}")
+                if sp.presence_penalty != 0:
+                    unsupported.append(f"presence_penalty={sp.presence_penalty}")
+                if unsupported:
+                    raise ValueError(
+                        f"STT does not support sampling params: {', '.join(unsupported)}. "
+                        "Only greedy decoding (temperature=0) is supported."
+                    )
 
             prompt_token_ids = new_req.prompt_token_ids or []
 
@@ -1417,10 +1407,17 @@ class MetalModelRunner:
         if not mm_features:
             return None
 
+        # Handle malformed mm_features gracefully
+        if not isinstance(mm_features, (list, tuple)):
+            return None
+
         for feat in mm_features:
+            # Skip malformed entries
+            if not hasattr(feat, "modality") or not hasattr(feat, "data"):
+                continue
             if feat.modality != "audio" or feat.data is None:
                 continue
-            if "input_features" not in feat.data:
+            if not isinstance(feat.data, dict) or "input_features" not in feat.data:
                 continue
 
             input_feat = feat.data["input_features"].data
@@ -1450,16 +1447,7 @@ class MetalModelRunner:
         prompt_token_ids: list[int],
         eot_token: int,
     ) -> list[int]:
-        """Greedy decode transcription tokens from audio features.
-
-        Args:
-            audio_features: Encoded audio from Whisper encoder
-            prompt_token_ids: Decoder prompt tokens (language, task, etc.)
-            eot_token: End-of-transcript token ID
-
-        Returns:
-            List of decoded token IDs, ending with EOT
-        """
+        """Greedy decode using vLLM's pre-built prompt tokens."""
         # Guard against empty prompt — return EOT immediately
         if not prompt_token_ids:
             return [eot_token]
