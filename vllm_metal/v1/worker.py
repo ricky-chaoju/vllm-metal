@@ -28,6 +28,7 @@ from vllm_metal.config import (
     get_config,
 )
 from vllm_metal.platform import MetalPlatform
+from vllm_metal.stt.config import STT_SCHED_AVAILABLE_BYTES
 from vllm_metal.utils import set_wired_limit
 
 if TYPE_CHECKING:
@@ -134,8 +135,8 @@ class MetalWorker(WorkerBase):
         """Load the model onto the Metal device."""
         self.model_runner.load_model()
 
-        # Patch model for paged attention if enabled
-        if self.metal_config.use_paged_attention:
+        # Patch model for paged attention if enabled (skip for STT)
+        if self.metal_config.use_paged_attention and not self.model_runner.is_stt:
             self._setup_paged_attention()
 
     def _setup_paged_attention(self) -> None:
@@ -320,6 +321,13 @@ class MetalWorker(WorkerBase):
         Returns:
             Available memory in bytes
         """
+        # STT models don't use vLLM's KV cache.
+        # Return a generous value so the scheduler's minimum-memory check
+        # passes.  No KV cache is actually allocated for STT.
+        if self.model_runner.is_stt:
+            logger.info("STT model: reporting nominal memory for scheduler")
+            return STT_SCHED_AVAILABLE_BYTES
+
         # --- Paged attention: report real MPS cache capacity ---
         if self.metal_config.use_paged_attention:
             runner = self.model_runner
@@ -464,6 +472,8 @@ class MetalWorker(WorkerBase):
         Returns:
             Tuple of supported task types
         """
+        if self.model_runner.is_stt:
+            return ("transcription",)
         return ("generate",)
 
     def sleep(self, level: int = 1) -> None:
