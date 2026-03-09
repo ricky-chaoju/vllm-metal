@@ -490,3 +490,230 @@ class TestSTTExecutorEndToEnd:
         # Must end with EOT
         eot = tokenizer.convert_tokens_to_ids("<|endoftext|>")
         assert result[-1] == eot
+
+
+# ===========================================================================
+# Qwen3-ASR STTExecutor dispatch & integration
+# ===========================================================================
+
+
+def _make_qwen3_executor() -> STTExecutor:
+    """Create a STTExecutor configured for Qwen3-ASR model type.
+
+    Uses concrete stubs (not MagicMock rebinding) to exercise the
+    Qwen3-ASR-specific dispatch paths in STTExecutor.
+    """
+    model = MagicMock()
+    model.model_type = "qwen3_asr"
+    model.config = SimpleNamespace(eos_token_id=151643)
+    model.encode = MagicMock(return_value=mx.ones((50, 1024)))
+
+    executor = STTExecutor(model, "/fake/qwen3-asr")
+
+    # Pre-inject a mock transcriber that mimics Qwen3ASRTranscriber
+    mock_tokenizer = MagicMock()
+    # tokenizer.encode returns different IDs for special tokens
+    _token_map = {
+        "<asr_text>": [151674],
+        "<|im_end|>": [151645],
+    }
+    mock_tokenizer.encode = MagicMock(
+        side_effect=lambda s, add_special_tokens=False: _token_map.get(s, [0])
+    )
+    mock_transcriber = MagicMock()
+    mock_transcriber.tokenizer = mock_tokenizer
+    mock_transcriber.build_prompt_tokens = MagicMock(
+        return_value=[1, 2, 3]  # simplified prompt
+    )
+    # Return token stream: <lang> <asr_text> hello world <|im_end|>
+    mock_transcriber.greedy_decode_tokens = MagicMock(
+        return_value=[100, 151674, 200, 300, 151645]
+    )
+    executor._transcriber = mock_transcriber
+
+    return executor
+
+
+class TestSTTExecutorQwen3ASRDispatch:
+    """Tests for Qwen3-ASR-specific dispatch paths in STTExecutor."""
+
+    def test_eot_token_from_config(self) -> None:
+        """Qwen3-ASR eot_token should come from model.config.eos_token_id."""
+        executor = _make_qwen3_executor()
+        assert executor.eot_token == 151643
+
+    def test_transcriber_dispatches_to_qwen3(self) -> None:
+        """model_type='qwen3_asr' should create Qwen3ASRTranscriber."""
+        model = MagicMock()
+        model.model_type = "qwen3_asr"
+        executor = STTExecutor(model, "/fake/path")
+
+        with patch("vllm_metal.stt.transcribe.Qwen3ASRTranscriber") as mock_cls:
+            mock_cls.return_value = MagicMock()
+            _ = executor.transcriber
+            mock_cls.assert_called_once_with(model, model_path="/fake/path")
+
+    def test_extract_audio_features_2d_passthrough(self) -> None:
+        """Qwen3-ASR: 2D mel (n_mels, time) should pass through without transpose."""
+        executor = _make_qwen3_executor()
+
+        def capture_encode(mel_input):
+            # Qwen3-ASR receives (n_mels, time) directly — no transpose
+            assert mel_input.shape == (128, 500)
+            return mx.ones((50, 1024))
+
+        executor.model.encode = capture_encode
+
+        mel = np.zeros((128, 500), dtype=np.float32)
+        req = _make_new_req(mm_features=[{"input_features": mel}])
+        result = executor.extract_audio_features(req)
+        assert result is not None
+        assert result.shape == (50, 1024)
+
+    def test_extract_audio_features_3d_drops_batch(self) -> None:
+        """Qwen3-ASR: 3D mel (1, n_mels, time) should drop batch dim."""
+        executor = _make_qwen3_executor()
+
+        def capture_encode(mel_input):
+            # Batch dim stripped → (n_mels, time)
+            assert mel_input.shape == (128, 500)
+            return mx.ones((50, 1024))
+
+        executor.model.encode = capture_encode
+
+        mel = np.zeros((1, 128, 500), dtype=np.float32)
+        req = _make_new_req(mm_features=[{"input_features": mel}])
+        result = executor.extract_audio_features(req)
+        assert result is not None
+
+    def test_extract_audio_features_1d_passes_through(self) -> None:
+        """Qwen3-ASR: 1D mel is passed to encoder as-is (no rank check)."""
+        executor = _make_qwen3_executor()
+
+        def capture_encode(mel_input):
+            assert mel_input.ndim == 1
+            return mx.ones((50, 1024))
+
+        executor.model.encode = capture_encode
+
+        mel = np.zeros((500,), dtype=np.float32)
+        req = _make_new_req(mm_features=[{"input_features": mel}])
+        result = executor.extract_audio_features(req)
+        assert result is not None
+
+    def test_decode_rebuilds_prompt_with_audio_frames(self) -> None:
+        """Qwen3-ASR decode should rebuild prompt using build_prompt_tokens."""
+        executor = _make_qwen3_executor()
+
+        audio = mx.ones((50, 1024))  # 50 audio frames
+        executor.decode(audio, [1, 2, 3])
+
+        # build_prompt_tokens should be called with n_audio_frames=50
+        executor.transcriber.build_prompt_tokens.assert_called_once_with(50)
+
+    def test_decode_extracts_asr_text_tokens(self) -> None:
+        """Qwen3-ASR decode should extract tokens between <asr_text> and <|im_end|>."""
+        executor = _make_qwen3_executor()
+
+        audio = mx.ones((50, 1024))
+        result = executor.decode(audio, [1, 2, 3])
+
+        # greedy_decode_tokens returns [100, 151674, 200, 300, 151645]
+        # _extract_asr_text_tokens: between 151674 (<asr_text>) and 151645 (<|im_end|>)
+        # → [200, 300]
+        # + eot (151643) appended
+        assert result == [200, 300, 151643]
+
+    def test_decode_empty_prompt_returns_eot(self) -> None:
+        """Empty prompt should return only Qwen3-ASR EOT."""
+        executor = _make_qwen3_executor()
+        result = executor.decode(mx.ones((50, 1024)), [])
+        assert result == [151643]
+
+
+# ===========================================================================
+# TestExtractASRTextTokens
+# ===========================================================================
+
+
+class TestExtractASRTextTokens:
+    """Tests for STTExecutor._extract_asr_text_tokens.
+
+    This method extracts content tokens between <asr_text> and <|im_end|>,
+    which is the core post-processing step for Qwen3-ASR output.
+    """
+
+    def test_basic_extraction(self) -> None:
+        """Tokens between <asr_text> and <|im_end|> should be extracted."""
+        executor = _make_qwen3_executor()
+        # [lang, <asr_text>, hello, world, <|im_end|>]
+        tokens = [100, 151674, 200, 300, 151645]
+        result = executor._extract_asr_text_tokens(tokens)
+        assert result == [200, 300]
+
+    def test_no_asr_text_tag_returns_original(self) -> None:
+        """Without <asr_text>, tokens should be returned as-is."""
+        executor = _make_qwen3_executor()
+        tokens = [100, 200, 300]
+        result = executor._extract_asr_text_tokens(tokens)
+        assert result == [100, 200, 300]
+
+    def test_no_im_end_returns_to_end(self) -> None:
+        """Without <|im_end|>, extract from <asr_text> to end of sequence."""
+        executor = _make_qwen3_executor()
+        # [lang, <asr_text>, hello, world] — no im_end
+        tokens = [100, 151674, 200, 300]
+        result = executor._extract_asr_text_tokens(tokens)
+        assert result == [200, 300]
+
+    def test_multiple_asr_text_uses_last(self) -> None:
+        """Multiple <asr_text> tags should use the last one."""
+        executor = _make_qwen3_executor()
+        # Two <asr_text> tags
+        tokens = [151674, 999, 151674, 200, 300, 151645]
+        result = executor._extract_asr_text_tokens(tokens)
+        assert result == [200, 300]
+
+    def test_empty_content_between_tags(self) -> None:
+        """<asr_text> immediately followed by <|im_end|> → empty list."""
+        executor = _make_qwen3_executor()
+        tokens = [100, 151674, 151645]
+        result = executor._extract_asr_text_tokens(tokens)
+        assert result == []
+
+    def test_asr_text_at_end(self) -> None:
+        """<asr_text> as last token → no content, return as-is."""
+        executor = _make_qwen3_executor()
+        tokens = [100, 200, 151674]
+        result = executor._extract_asr_text_tokens(tokens)
+        # start=3, which equals len(tokens), so returns original
+        assert result == [100, 200, 151674]
+
+
+# ===========================================================================
+# TestQwen3ASRStubRejectsTranslate
+# ===========================================================================
+
+
+class TestQwen3ASRStubRejectsTranslate:
+    """Qwen3-ASR does not support translation — must reject explicitly."""
+
+    def test_translate_raises_valueerror(self) -> None:
+        """task_type='translate' must raise ValueError, not silently transcribe."""
+        from vllm_metal.stt.hf_config import _make_stub_class
+
+        stub_cls = _make_stub_class()
+        model_config = MagicMock()
+        model_config.tokenizer = "Qwen/Qwen3-ASR-0.6B"
+        stt_config = MagicMock()
+
+        with pytest.raises(ValueError, match="does not support translation"):
+            stub_cls.get_generation_prompt(
+                audio=np.zeros(16000, dtype=np.float32),
+                stt_config=stt_config,
+                model_config=model_config,
+                language="en",
+                task_type="translate",
+                request_prompt="",
+                to_language=None,
+            )

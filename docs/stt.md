@@ -1,6 +1,6 @@
 # Speech-to-Text (STT)
 
-vllm-metal supports OpenAI-compatible Speech-to-Text using Whisper models, running natively on Apple Silicon via MLX.
+vllm-metal supports OpenAI-compatible Speech-to-Text using Whisper and Qwen3-ASR models, running natively on Apple Silicon via MLX.
 
 ## Installation
 
@@ -14,7 +14,7 @@ Then install the optional STT dependencies inside the virtual environment:
 
 ```bash
 source .venv-vllm-metal/bin/activate
-pip install vllm-metal[stt]
+pip install 'vllm-metal[stt]'
 ```
 
 ### ffmpeg (Optional)
@@ -41,6 +41,8 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ## Supported Models
 
+### Whisper
+
 Any OpenAI Whisper checkpoint (HuggingFace or MLX format):
 
 | Model | Parameters | HuggingFace ID |
@@ -53,6 +55,12 @@ Any OpenAI Whisper checkpoint (HuggingFace or MLX format):
 | Whisper Large V3 Turbo | 809M | `openai/whisper-large-v3-turbo` |
 
 MLX-format weights (e.g. from `mlx-community`) are also supported.
+
+### Qwen3-ASR
+
+| Model | Parameters | HuggingFace ID |
+|-------|-----------|----------------|
+| Qwen3-ASR-0.6B | 0.6B | `Qwen/Qwen3-ASR-0.6B` |
 
 ## API Endpoints
 

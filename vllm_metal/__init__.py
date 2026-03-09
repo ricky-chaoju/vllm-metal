@@ -96,10 +96,12 @@ def _register() -> str | None:
 
 
 def _register_ops() -> None:
-    """Register Metal operations with vLLM.
+    """Register Metal operations and custom configs with vLLM.
 
     This is the entry point for vLLM's general plugin system.
-    Currently a no-op as operations are handled internally.
+    Registers STT model configs so that vLLM/transformers can
+    recognise model types like ``qwen3_asr``.
     """
-    # Operations are registered implicitly through the MLX backend
-    pass
+    from vllm_metal.stt.hf_config import register_qwen3_asr_config
+
+    register_qwen3_asr_config()
