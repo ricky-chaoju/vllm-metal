@@ -12,9 +12,25 @@ the real inference runs through the MLX ``Qwen3ASRModel``.
 
 from __future__ import annotations
 
+import logging
+
 from transformers.configuration_utils import PretrainedConfig
 
-from vllm_metal.stt.config import get_whisper_languages as _get_languages
+from vllm_metal.stt.config import get_whisper_languages
+
+logger = logging.getLogger(__name__)
+
+# Map language names (from Qwen3-ASR config) to ISO 639-1 codes.
+# Built from the Whisper language table which covers all 30 Qwen3-ASR languages.
+_NAME_TO_CODE: dict[str, str] = {
+    v.title(): k for k, v in get_whisper_languages().items()
+}
+# Qwen3-ASR uses "Cantonese" which Whisper maps as "yue"
+_NAME_TO_CODE["Cantonese"] = "yue"
+# Qwen3-ASR uses "Filipino" which Whisper maps under "tl" (Tagalog)
+_NAME_TO_CODE["Filipino"] = "tl"
+# Qwen3-ASR uses "Macedonian" which Whisper maps as "mk"
+_NAME_TO_CODE["Macedonian"] = "mk"
 
 # ---------------------------------------------------------------------------
 # HuggingFace PretrainedConfig subclasses
@@ -326,7 +342,8 @@ def _make_stub_class():
         Transcription-only — text generation is not supported.
         """
 
-        supported_languages: Mapping[str, str] = _get_languages()
+        # Derived from HF config.support_languages at init time.
+        supported_languages: Mapping[str, str] = {}
         supports_transcription = True
         supports_transcription_only = True
         supports_segment_timestamp = False
@@ -371,6 +388,14 @@ def _make_stub_class():
             model_config: ModelConfig,
             task_type: Literal["transcribe", "translate"],
         ) -> SpeechToTextConfig:
+            # Populate supported_languages from HF config on first call.
+            # This runs during OpenAISpeechToText.__init__ (before
+            # validate_language), and model_cls is the class not an instance,
+            # so __init__ never fires — we must set it here.
+            if not cls.supported_languages:
+                lang_names = getattr(model_config.hf_config, "support_languages", None)
+                if lang_names:
+                    cls.supported_languages = _build_supported_languages(lang_names)
             return SpeechToTextConfig(
                 sample_rate=16000,
                 max_audio_clip_s=30,
@@ -392,6 +417,17 @@ def _make_stub_class():
             if task_type == "translate":
                 raise ValueError(
                     "Qwen3-ASR does not support translation, only transcription"
+                )
+            if language:
+                logger.warning(
+                    "Qwen3-ASR ignores language parameter %r; "
+                    "model auto-detects language",
+                    language,
+                )
+            if request_prompt:
+                logger.warning(
+                    "Qwen3-ASR ignores prompt parameter; "
+                    "prompt-guided transcription is not supported"
                 )
             tokenizer = get_tokenizer(model_config.tokenizer)
             prompt_text = (
@@ -433,6 +469,20 @@ def _make_stub_class():
     return Qwen3ASRStub
 
 
+def _build_supported_languages(lang_names: list[str] | None) -> dict[str, str]:
+    """Convert Qwen3-ASR ``support_languages`` (name list) to ``{code: name}``."""
+    if not lang_names:
+        return {}
+    result: dict[str, str] = {}
+    for name in lang_names:
+        code = _NAME_TO_CODE.get(name)
+        if code:
+            result[code] = name.lower()
+        else:
+            logger.debug("Unknown language in Qwen3-ASR config: %s", name)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -457,7 +507,7 @@ def register_qwen3_asr_config() -> None:
     try:
         AutoConfig.register("qwen3_asr", Qwen3ASRHFConfig)
     except ValueError:
-        pass  # Already registered
+        logger.debug("AutoConfig qwen3_asr already registered")
 
     # 2. Register with vLLM's internal _CONFIG_REGISTRY if available
     try:
@@ -465,8 +515,8 @@ def register_qwen3_asr_config() -> None:
 
         if "qwen3_asr" not in _CONFIG_REGISTRY:
             _CONFIG_REGISTRY["qwen3_asr"] = Qwen3ASRHFConfig
-    except (ImportError, AttributeError):
-        pass  # vLLM version without _CONFIG_REGISTRY
+    except (ImportError, AttributeError) as exc:
+        logger.debug("_CONFIG_REGISTRY registration skipped: %s", exc)
 
     # 3. Register architecture with vLLM's ModelRegistry
     # Use our stub class that implements SupportsTranscription.
@@ -477,5 +527,5 @@ def register_qwen3_asr_config() -> None:
         if arch not in ModelRegistry.get_supported_archs():
             stub_cls = _make_stub_class()
             ModelRegistry.register_model(arch, stub_cls)
-    except (ImportError, AttributeError):
-        pass
+    except (ImportError, AttributeError) as exc:
+        logger.debug("ModelRegistry registration skipped: %s", exc)

@@ -645,6 +645,8 @@ class STTExecutor:
             # HF WhisperFeatureExtractor output shape is already (n_mels, time)
             if mel.ndim == 3:
                 mel = mel[0]  # drop batch dim → (n_mels, time)
+            elif mel.ndim != 2:
+                raise ValueError(f"Qwen3-ASR expects 2D or 3D mel, got rank {mel.ndim}")
             features = self.model.encode(mel)
             mx.eval(features)
             return features

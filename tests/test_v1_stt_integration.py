@@ -586,20 +586,14 @@ class TestSTTExecutorQwen3ASRDispatch:
         result = executor.extract_audio_features(req)
         assert result is not None
 
-    def test_extract_audio_features_1d_passes_through(self) -> None:
-        """Qwen3-ASR: 1D mel is passed to encoder as-is (no rank check)."""
+    def test_extract_audio_features_1d_raises(self) -> None:
+        """Qwen3-ASR: 1D mel should raise ValueError (expects 2D or 3D)."""
         executor = _make_qwen3_executor()
-
-        def capture_encode(mel_input):
-            assert mel_input.ndim == 1
-            return mx.ones((50, 1024))
-
-        executor.model.encode = capture_encode
 
         mel = np.zeros((500,), dtype=np.float32)
         req = _make_new_req(mm_features=[{"input_features": mel}])
-        result = executor.extract_audio_features(req)
-        assert result is not None
+        with pytest.raises(ValueError, match="rank"):
+            executor.extract_audio_features(req)
 
     def test_decode_rebuilds_prompt_with_audio_frames(self) -> None:
         """Qwen3-ASR decode should rebuild prompt using build_prompt_tokens."""

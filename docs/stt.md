@@ -62,6 +62,9 @@ MLX-format weights (e.g. from `mlx-community`) are also supported.
 |-------|-----------|----------------|
 | Qwen3-ASR-0.6B | 0.6B | `Qwen/Qwen3-ASR-0.6B` |
 
+> Qwen3-ASR is transcription-only: translation (`/v1/audio/translations`) is not supported.
+> The model auto-detects language; `language` and `prompt` parameters are ignored.
+
 ## API Endpoints
 
 ### `POST /v1/audio/transcriptions`
