@@ -23,11 +23,17 @@ import mlx.core as mx
 # Qwen3.5 GDN dimensions (shared across all model sizes)
 DK = 128  # key head dim
 DV = 128  # value head dim
-HK = 16   # key heads
+HK = 16  # key heads
 
 
 def _make_inputs(  # noqa: N803
-    batch, seq_len, n_k_heads, n_v_heads, key_dim, val_dim, dtype,
+    batch,
+    seq_len,
+    n_k_heads,
+    n_v_heads,
+    key_dim,
+    val_dim,
+    dtype,
 ):
     """Create synthetic inputs for benchmarking.
 
@@ -48,8 +54,17 @@ def _make_inputs(  # noqa: N803
 
 
 def bench_one(  # noqa: N803
-    *, backend, batch, seq_len, n_k_heads, n_v_heads, key_dim, val_dim,
-    warmup, iters, dtype,
+    *,
+    backend,
+    batch,
+    seq_len,
+    n_k_heads,
+    n_v_heads,
+    key_dim,
+    val_dim,
+    warmup,
+    iters,
+    dtype,
 ) -> float:
     """Run one benchmark config and return median ms per call."""
     from mlx_lm.models.gated_delta import (
@@ -59,7 +74,13 @@ def bench_one(  # noqa: N803
     )
 
     q, k, v, a, b, a_log, dt_bias, state = _make_inputs(
-        batch, seq_len, n_k_heads, n_v_heads, key_dim, val_dim, dtype,
+        batch,
+        seq_len,
+        n_k_heads,
+        n_v_heads,
+        key_dim,
+        val_dim,
+        dtype,
     )
 
     if backend == "fused":
@@ -88,6 +109,7 @@ def bench_one(  # noqa: N803
 
         fn = _precomp_fn
     elif backend == "ops":
+
         def _ops_fn():
             g = compute_g(a_log, a, dt_bias)
             beta = mx.sigmoid(b)
@@ -123,7 +145,13 @@ def check_correctness(n_v_heads=32, dtype=mx.float16):
 
     for batch, seq_len in [(1, 1), (1, 16), (4, 1), (2, 8)]:
         q, k, v, a, b, a_log, dt_bias, state = _make_inputs(
-            batch, seq_len, HK, n_v_heads, DK, DV, dtype,
+            batch,
+            seq_len,
+            HK,
+            n_v_heads,
+            DK,
+            DV,
+            dtype,
         )
 
         # Reference: mlx_lm Metal kernel (pre-computed gating)
@@ -161,21 +189,34 @@ def check_correctness(n_v_heads=32, dtype=mx.float16):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark GDN kernel")
     parser.add_argument(
-        "--batch", type=int, nargs="+", default=[1, 4, 8],
+        "--batch",
+        type=int,
+        nargs="+",
+        default=[1, 4, 8],
     )
     parser.add_argument(
-        "--seq-lens", type=int, nargs="+", default=[1, 16, 64],
+        "--seq-lens",
+        type=int,
+        nargs="+",
+        default=[1, 16, 64],
     )
     parser.add_argument(
-        "--hv", type=int, nargs="+", default=[32, 48],
+        "--hv",
+        type=int,
+        nargs="+",
+        default=[32, 48],
     )
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50)
     parser.add_argument(
-        "--dtype", choices=["float16", "bfloat16"], default="float16",
+        "--dtype",
+        choices=["float16", "bfloat16"],
+        default="float16",
     )
     parser.add_argument(
-        "--check", action="store_true", help="Run correctness check only",
+        "--check",
+        action="store_true",
+        help="Run correctness check only",
     )
     args = parser.parse_args()
 
@@ -226,7 +267,7 @@ def main():
                 print(
                     f"{n_v_heads:4d} | {batch:3d} | {seq_len:5d} | "
                     f"{t_fused:10.3f} | {t_metal:10.3f} | {t_precomp:10.3f} | "
-                    f"{t_ops:10.3f} | {t_fused/t_metal:6.2f}x"
+                    f"{t_ops:10.3f} | {t_fused / t_metal:6.2f}x"
                 )
 
     print()
