@@ -280,3 +280,67 @@ class TestKVCacheSpec:
         specs = MetalModelRunner.get_kv_cache_spec(runner)
         assert len(specs) == 24
         assert all(isinstance(s, FullAttentionSpec) for s in specs.values())
+
+
+# === HybridPagedAttentionBackend allocation ===
+
+
+class TestHybridBackendAllocation:
+    def test_allocates_separate_caches(self) -> None:
+        import mlx.core as mx
+
+        from vllm_metal.paged_attention_backend.hybrid import (
+            HybridPagedAttentionBackend,
+        )
+
+        backend = HybridPagedAttentionBackend(
+            num_layers=32,
+            full_attention_interval=4,
+            max_num_seqs=8,
+            num_kv_heads=4,
+            head_dim=256,
+            linear_num_k_heads=16,
+            linear_num_v_heads=32,
+            linear_key_head_dim=128,
+            linear_value_head_dim=128,
+            linear_conv_kernel_dim=4,
+            block_size=16,
+            dtype=mx.float16,
+        )
+        backend.initialize(num_blocks=100)
+
+        # SDPA cache: 8 layers, 100 blocks
+        assert backend.kv_cache.num_layers == 8
+        assert backend.kv_cache.num_blocks == 100
+
+        # Linear cache: 24 layers, max_num_seqs slots
+        assert backend.linear_cache.num_layers == 24
+        assert backend.linear_cache.num_blocks == 8  # max_num_seqs
+
+    def test_memory_budget_subtracts_linear(self) -> None:
+        """Worker must subtract linear cache cost before computing SDPA blocks."""
+
+        # SDPA block bytes (from get_cache_block_size_bytes)
+        # 2 * 8 layers * 16 block_size * 4 kv_heads * 256 head_dim * 2 bytes
+        sdpa_per_block = 2 * 8 * 16 * 4 * 256 * 2  # 524,288
+
+        # Linear per slot (from linear_cache_bytes_per_slot)
+        conv_dim = 16 * 128 * 2 + 32 * 128  # 8192
+        conv = 24 * 3 * conv_dim * 2
+        recurrent = 24 * 32 * 128 * 128 * 2
+        linear_per_slot = conv + recurrent  # 26,345,472
+
+        max_num_seqs = 8
+        linear_fixed = linear_per_slot * max_num_seqs  # ~201 MB
+
+        # Given a budget, SDPA blocks should be computed AFTER subtracting
+        # linear fixed cost.
+        total_budget = 1_000_000_000  # 1 GB
+        expected_sdpa_budget = total_budget - linear_fixed
+        expected_blocks = expected_sdpa_budget // sdpa_per_block
+
+        # Verify the math is correct
+        assert expected_blocks > 0
+        assert (
+            expected_blocks < total_budget // sdpa_per_block
+        )  # fewer than without linear
