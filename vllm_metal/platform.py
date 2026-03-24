@@ -231,7 +231,27 @@ class MetalPlatform(Platform):
             # scheduler only requests full prefills, which matches the current
             # model-runner contract.
             scheduler_config.enable_chunked_prefill = False
-            logger.info("Metal: disabled chunked prefill")
+
+            # Without chunked prefill, the scheduler must fit the entire
+            # prompt in a single step.  Ensure max_num_batched_tokens (and
+            # max_num_scheduled_tokens) are at least max_model_len;
+            # otherwise the scheduler silently refuses to schedule any
+            # prompt that exceeds the budget (see Scheduler.schedule —
+            # the "chunked_prefill is disabled" break).
+            if model_config is not None:
+                model_max = model_config.max_model_len
+                if scheduler_config.max_num_batched_tokens < model_max:
+                    scheduler_config.max_num_batched_tokens = model_max
+                if (
+                    scheduler_config.max_num_scheduled_tokens is not None
+                    and scheduler_config.max_num_scheduled_tokens < model_max
+                ):
+                    scheduler_config.max_num_scheduled_tokens = model_max
+
+            logger.info(
+                "Metal: disabled chunked prefill, max_num_batched_tokens=%d",
+                scheduler_config.max_num_batched_tokens,
+            )
 
         if config.use_paged_attention and getattr(
             cache_config, "enable_prefix_caching", False
