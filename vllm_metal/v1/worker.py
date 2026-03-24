@@ -207,6 +207,16 @@ class MetalWorker(WorkerBase):
         usable_metal = int(metal_limit * fraction)
         kv_budget = self._kv_budget_bytes(metal_limit, model_memory, fraction)
 
+        # For hybrid models, subtract the fixed linear cache cost first.
+        # Linear state is O(1) per request (not per token), so it's a
+        # fixed allocation based on max_num_seqs.
+        linear_cache_bytes = 0
+        if runner.is_hybrid:
+            linear_cache_bytes = runner.linear_cache_bytes_per_slot() * (
+                runner.scheduler_config.max_num_seqs
+            )
+            kv_budget -= linear_cache_bytes
+
         if kv_budget <= 0:
             raise ValueError(
                 "Paged attention: not enough Metal memory for KV cache. "
@@ -214,6 +224,7 @@ class MetalWorker(WorkerBase):
                 f"fraction={fraction}, "
                 f"usable_metal={usable_metal / 1e9:.2f}GB, "
                 f"model_memory={model_memory / 1e9:.2f}GB, "
+                f"linear_cache={linear_cache_bytes / 1e9:.2f}GB, "
                 f"overhead={PAGED_ATTENTION_OVERHEAD_BYTES / 1e9:.2f}GB, "
                 f"kv_budget={kv_budget / 1e9:.2f}GB. "
                 "Mitigations: increase VLLM_METAL_MEMORY_FRACTION, "
@@ -268,6 +279,7 @@ class MetalWorker(WorkerBase):
             backend = HybridPagedAttentionBackend(
                 num_layers=runner.num_layers,
                 full_attention_interval=runner.full_attention_interval,
+                max_num_seqs=runner.scheduler_config.max_num_seqs,
                 num_kv_heads=runner.num_kv_heads,
                 head_dim=runner.head_dim,
                 linear_num_k_heads=runner.linear_num_k_heads,

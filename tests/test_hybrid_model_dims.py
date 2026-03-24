@@ -187,6 +187,17 @@ class TestCacheBlockSizeBytes:
         expected = 2 * 8 * 16 * 4 * 256 * 2
         assert result == expected
 
+    def test_hybrid_linear_cache_bytes(self) -> None:
+        from vllm_metal.v1.model_runner import MetalModelRunner
+
+        runner = self._make_runner(QWEN35_4B_ARGS)
+        result = MetalModelRunner.linear_cache_bytes_per_slot(runner)
+        # 24 linear layers * ((3 * 8192) + (32 * 128 * 128)) * 2 bytes
+        conv_dim = 16 * 128 * 2 + 32 * 128  # 8192
+        conv = 24 * 3 * conv_dim * 2
+        recurrent = 24 * 32 * 128 * 128 * 2
+        assert result == conv + recurrent
+
     def test_non_hybrid_uses_all_layers(self) -> None:
         from vllm_metal.v1.model_runner import MetalModelRunner
 

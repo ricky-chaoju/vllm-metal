@@ -31,6 +31,7 @@ class HybridPagedAttentionBackend:
         *,
         num_layers: int,
         full_attention_interval: int,
+        max_num_seqs: int,
         # SDPA dims
         num_kv_heads: int,
         head_dim: int,
@@ -46,6 +47,7 @@ class HybridPagedAttentionBackend:
     ) -> None:
         self._num_layers = num_layers
         self._full_attention_interval = full_attention_interval
+        self._max_num_seqs = max_num_seqs
         self._block_size = block_size
         self._dtype = dtype
 
@@ -91,15 +93,16 @@ class HybridPagedAttentionBackend:
             dtype=self._dtype,
         )
 
-        # Linear cache: recurrent state for GDN layers, same num_blocks
-        # so the scheduler's block management works uniformly.
+        # Linear cache: fixed-size recurrent state, one slot per concurrent
+        # request.  Uses max_num_seqs (not num_blocks) because linear state
+        # is O(1) per request, unlike SDPA KV which grows with seq_len.
         conv_dim = (
             self._linear_num_k_heads * self._linear_key_head_dim * 2
             + self._linear_num_v_heads * self._linear_value_head_dim
         )
         self._linear_cache = LinearAttentionCache(
             num_layers=len(self._linear_indices),
-            num_blocks=num_blocks,
+            num_blocks=self._max_num_seqs,
             conv_kernel_dim=self._linear_conv_kernel_dim,
             conv_dim=conv_dim,
             num_v_heads=self._linear_num_v_heads,
@@ -109,11 +112,13 @@ class HybridPagedAttentionBackend:
         )
 
         logger.info(
-            "Hybrid cache initialized: %d SDPA layers + %d linear layers, "
-            "%d blocks allocated",
+            "Hybrid cache initialized: %d SDPA layers (%d blocks), "
+            "%d linear layers (%d slots, %.1f MB)",
             len(self._sdpa_indices),
-            len(self._linear_indices),
             num_blocks,
+            len(self._linear_indices),
+            self._max_num_seqs,
+            self._linear_cache.bytes_per_block() * self._max_num_seqs / 1024 / 1024,
         )
 
     def patch_model(self, model: Any) -> int:

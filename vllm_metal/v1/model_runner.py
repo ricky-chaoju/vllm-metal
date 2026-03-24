@@ -1072,6 +1072,27 @@ class MetalModelRunner:
             * dtype_size
         )
 
+    def linear_cache_bytes_per_slot(self) -> int:
+        """Bytes for one request's linear attention state across all GDN layers.
+
+        Only valid when ``is_hybrid`` is True.
+        """
+        if self.kv_cache_dtype is None:
+            raise RuntimeError("KV cache dtype not initialized; load_model() first")
+        dtype_size = self.kv_cache_dtype.size
+        conv_dim = (
+            self.linear_num_k_heads * self.linear_key_head_dim * 2
+            + self.linear_num_v_heads * self.linear_value_head_dim
+        )
+        conv_bytes = (self.linear_conv_kernel_dim - 1) * conv_dim * dtype_size
+        recurrent_bytes = (
+            self.linear_num_v_heads
+            * self.linear_value_head_dim
+            * self.linear_key_head_dim
+            * dtype_size
+        )
+        return self.num_linear_layers * (conv_bytes + recurrent_bytes)
+
     def warm_up(self) -> None:
         """Warm up the model with a dummy forward pass.
 
