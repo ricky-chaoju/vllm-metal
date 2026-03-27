@@ -47,6 +47,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler
 
 from vllm_metal.config import get_config
+from vllm_metal.paged_attention_backend.mla import MLA_DEFAULT_QK_ROPE_HEAD_DIM
 from vllm_metal.paged_attention_backend.protocol import PagedAttentionBackend
 from vllm_metal.paged_attention_common import (
     OffsetCache,
@@ -73,9 +74,6 @@ _model_cache_lock = Lock()
 _MIN_BATCH_SIZE_FOR_BATCHING = 2  # Minimum requests to use BatchKVCache
 _MAX_BATCH_SIZE = 64  # Maximum batch size for decode
 
-# MLA default rope head dim (GLM/DeepSeek lineage; used when qk_rope_head_dim
-# is absent from model config).
-_MLA_DEFAULT_QK_ROPE_HEAD_DIM = 64
 
 # Performance tuning
 _CACHE_CLEAR_INTERVAL = 50  # Clear cache every N finished requests
@@ -692,6 +690,19 @@ class MetalModelRunner:
         fai = self.model_args.get("full_attention_interval", 0)
         return isinstance(fai, int) and fai > 0
 
+    @property
+    def mla_latent_dim(self) -> int:
+        """Combined latent dimension for MLA cache: kv_lora_rank + qk_rope_head_dim.
+
+        Only valid when is_mla is True. Derived directly from model_args so
+        callers do not depend on the _resolve_model_dims head_dim override.
+        """
+        if not self.is_mla:
+            raise AttributeError("mla_latent_dim is only valid for MLA models")
+        return int(self.model_args["kv_lora_rank"]) + int(
+            self.model_args.get("qk_rope_head_dim", MLA_DEFAULT_QK_ROPE_HEAD_DIM)
+        )
+
     def should_setup_paged_attention(self) -> bool:
         """Whether worker-side paged-attention setup should run.
 
@@ -925,12 +936,12 @@ class MetalModelRunner:
 
         # MLA (GLM/DeepSeek lineage): cache stores a joint latent vector per
         # layer, not per-head K/V. One virtual head sized kv_lora_rank +
-        # qk_rope_head_dim keeps get_cache_block_size_bytes() correct without
-        # MLA-specific logic in the sizing path.
+        # qk_rope_head_dim keeps get_cache_block_size_bytes() conservative (2x)
+        # without MLA-specific logic in the sizing path.
         if self.is_mla:
             self.num_kv_heads = 1
             self.head_dim = int(args["kv_lora_rank"]) + int(
-                args.get("qk_rope_head_dim", _MLA_DEFAULT_QK_ROPE_HEAD_DIM)
+                args.get("qk_rope_head_dim", MLA_DEFAULT_QK_ROPE_HEAD_DIM)
             )
 
         # Hybrid (Qwen3.5): mix of SDPA and GDN linear attention layers.
@@ -1797,6 +1808,12 @@ class MetalModelRunner:
                 for req_id in decode_req_ids:
                     state = self._request_states.get(req_id)
                     if state is None:
+                        # Placeholder keeps the output tensor aligned; the warning surfaces the bug.
+                        logger.warning(
+                            "Paged cached request %s has no RequestState; "
+                            "emitting placeholder token. This is a state tracking bug.",
+                            req_id,
+                        )
                         req_ids.append(req_id)
                         req_id_to_index[req_id] = len(req_ids) - 1
                         sampled_tokens.append([0])
@@ -1878,14 +1895,22 @@ class MetalModelRunner:
             ) in paged_prefill_entries:
                 # Full prompt for sampling metadata (needed when token_ids
                 # is a suffix slice due to prefix cache hit).
+                # State exists for cached requests (intermediate chunks);
+                # new requests with a prefix hit look up from new_reqs_by_id.
                 state = self._request_states.get(rid)
-                full_prompt = (
-                    list(state.token_ids[: state.prompt_len])
-                    if start_pos > 0 and state is not None
-                    else list(new_reqs_by_id[rid].prompt_token_ids)
-                    if start_pos > 0
-                    else None
-                )
+                if start_pos == 0:
+                    full_prompt = None
+                elif state is not None:
+                    full_prompt = state.token_ids[: state.prompt_len]
+                else:
+                    req = new_reqs_by_id.get(rid)
+                    if req is None:
+                        raise RuntimeError(
+                            f"Prefix cache hit (start_pos={start_pos}) for request "
+                            f"{rid!r} but it has no RequestState and is not in "
+                            "new_reqs. This is a state tracking bug."
+                        )
+                    full_prompt = list(req.prompt_token_ids)
                 prefill_pack.append(
                     PrefillRequest(
                         req_id=rid,
@@ -1922,12 +1947,10 @@ class MetalModelRunner:
                     sampled_tokens[idx] = []
                 elif is_new:
                     sampled_tokens[idx] = [nt]
-                    # When prefix cache hits (start_pos > 0), tids is only
-                    # the suffix slice.  State needs the full prompt.
-                    if _start_pos > 0:
-                        full_prompt = list(new_reqs_by_id[rid].prompt_token_ids)
-                    else:
-                        full_prompt = list(tids)
+                    cached_full_prompt = prefill_pack[i].full_prompt_token_ids
+                    full_prompt = (
+                        cached_full_prompt if cached_full_prompt is not None else tids
+                    )
                     self._request_states[rid] = RequestState(
                         token_ids=full_prompt + [nt],
                         prompt_len=_prompt_len,

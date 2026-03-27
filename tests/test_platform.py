@@ -58,8 +58,8 @@ class TestMetalPlatform:
         backend = MetalPlatform.get_attn_backend_cls(AttentionBackendEnum.CPU_ATTN, cfg)
         assert backend == AttentionBackendEnum.CPU_ATTN.get_path()
 
-    def test_get_attn_backend_cls_rejects_mla(self) -> None:
-        """MLA is not supported on Metal/MLX."""
+    def test_get_attn_backend_cls_accepts_mla(self) -> None:
+        """MLA is handled by the vllm-metal model runner; CPU_ATTN is returned."""
         cfg = AttentionSelectorConfig(
             head_size=128,
             dtype=torch.float16,
@@ -67,8 +67,8 @@ class TestMetalPlatform:
             block_size=16,
             use_mla=True,
         )
-        with pytest.raises(NotImplementedError, match="MLA is not supported"):
-            MetalPlatform.get_attn_backend_cls(AttentionBackendEnum.CPU_ATTN, cfg)
+        backend = MetalPlatform.get_attn_backend_cls(AttentionBackendEnum.CPU_ATTN, cfg)
+        assert backend == AttentionBackendEnum.CPU_ATTN.get_path()
 
     def test_get_attn_backend_cls_rejects_sparse(self) -> None:
         """Sparse attention is not supported on Metal/MLX."""
@@ -132,7 +132,12 @@ class TestMetalPlatform:
     def test_check_and_update_config_disables_chunked_prefill(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Metal should disable chunked prefill until the runner supports it."""
+        """Metal should disable chunked prefill until the runner supports it.
+
+        When chunked prefill is disabled, max_num_batched_tokens must be at
+        least max_model_len so the scheduler can schedule the entire prompt
+        in a single step.
+        """
         import vllm_metal.stt.config as stt_config
         import vllm_metal.utils as metal_utils
 
@@ -150,21 +155,156 @@ class TestMetalPlatform:
                 model="test-model",
                 disable_cascade_attn=False,
                 tokenizer=None,
+                max_model_len=32768,
             ),
             scheduler_config=SimpleNamespace(
                 async_scheduling=True,
                 enable_chunked_prefill=True,
+                max_num_batched_tokens=2048,
+                max_num_scheduled_tokens=None,
             ),
         )
 
         MetalPlatform.check_and_update_config(vllm_config)
 
         assert vllm_config.scheduler_config.enable_chunked_prefill is False
+        assert vllm_config.scheduler_config.max_num_batched_tokens == 32768
         assert (
             vllm_config.parallel_config.worker_cls == "vllm_metal.v1.worker.MetalWorker"
         )
         assert vllm_config.parallel_config.distributed_executor_backend == "uni"
         assert vllm_config.parallel_config.disable_custom_all_reduce is True
+
+    def test_check_and_update_config_increases_max_num_scheduled_tokens_below_max_model_len(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """max_num_scheduled_tokens below max_model_len should be bumped up to max_model_len.
+
+        When max_num_scheduled_tokens is explicitly set to a value smaller
+        than max_model_len, it must be raised to match max_model_len so that
+        the scheduler can schedule the full prompt in a single step.
+        """
+        import vllm_metal.stt.config as stt_config
+        import vllm_metal.utils as metal_utils
+
+        monkeypatch.setattr(metal_utils, "get_model_download_path", lambda model: model)
+        monkeypatch.setattr(stt_config, "is_stt_model", lambda _model: False)
+
+        vllm_config = SimpleNamespace(
+            parallel_config=SimpleNamespace(
+                worker_cls="auto",
+                distributed_executor_backend="auto",
+                disable_custom_all_reduce=False,
+            ),
+            cache_config=SimpleNamespace(block_size=None),
+            model_config=SimpleNamespace(
+                model="test-model",
+                disable_cascade_attn=False,
+                tokenizer=None,
+                max_model_len=32768,
+            ),
+            scheduler_config=SimpleNamespace(
+                async_scheduling=True,
+                enable_chunked_prefill=True,
+                max_num_batched_tokens=2048,
+                max_num_scheduled_tokens=2048,
+            ),
+        )
+
+        MetalPlatform.check_and_update_config(vllm_config)
+
+        assert vllm_config.scheduler_config.enable_chunked_prefill is False
+        assert vllm_config.scheduler_config.max_num_batched_tokens == 32768
+        assert vllm_config.scheduler_config.max_num_scheduled_tokens == 32768
+
+    def test_check_and_update_config_does_not_reduce_large_max_num_batched_tokens(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """max_num_batched_tokens must not be lowered when already >= max_model_len.
+
+        If the user has explicitly set a token budget larger than max_model_len,
+        that setting must be preserved.
+        """
+        import vllm_metal.stt.config as stt_config
+        import vllm_metal.utils as metal_utils
+
+        monkeypatch.setattr(metal_utils, "get_model_download_path", lambda model: model)
+        monkeypatch.setattr(stt_config, "is_stt_model", lambda _model: False)
+
+        vllm_config = SimpleNamespace(
+            parallel_config=SimpleNamespace(
+                worker_cls="auto",
+                distributed_executor_backend="auto",
+                disable_custom_all_reduce=False,
+            ),
+            cache_config=SimpleNamespace(block_size=None),
+            model_config=SimpleNamespace(
+                model="test-model",
+                disable_cascade_attn=False,
+                tokenizer=None,
+                max_model_len=32768,
+            ),
+            scheduler_config=SimpleNamespace(
+                async_scheduling=True,
+                enable_chunked_prefill=True,
+                max_num_batched_tokens=65536,
+                max_num_scheduled_tokens=None,
+            ),
+        )
+
+        MetalPlatform.check_and_update_config(vllm_config)
+
+        assert vllm_config.scheduler_config.enable_chunked_prefill is False
+        # 65536 > 32768, so the value must stay at 65536
+        assert vllm_config.scheduler_config.max_num_batched_tokens == 65536
+
+    @pytest.mark.parametrize("max_num_scheduled_tokens", [32768, 65536])
+    def test_check_and_update_config_does_not_reduce_max_num_scheduled_tokens_when_at_least_max_model_len(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        max_num_scheduled_tokens: int,
+    ) -> None:
+        """max_num_scheduled_tokens must not be lowered when already >= max_model_len.
+
+        If the user has explicitly set a scheduled-token budget at least
+        max_model_len, that setting must be preserved (only values strictly
+        below max_model_len are bumped up).
+        """
+        import vllm_metal.stt.config as stt_config
+        import vllm_metal.utils as metal_utils
+
+        monkeypatch.setattr(metal_utils, "get_model_download_path", lambda model: model)
+        monkeypatch.setattr(stt_config, "is_stt_model", lambda _model: False)
+
+        vllm_config = SimpleNamespace(
+            parallel_config=SimpleNamespace(
+                worker_cls="auto",
+                distributed_executor_backend="auto",
+                disable_custom_all_reduce=False,
+            ),
+            cache_config=SimpleNamespace(block_size=None),
+            model_config=SimpleNamespace(
+                model="test-model",
+                disable_cascade_attn=False,
+                tokenizer=None,
+                max_model_len=32768,
+            ),
+            scheduler_config=SimpleNamespace(
+                async_scheduling=True,
+                enable_chunked_prefill=True,
+                max_num_batched_tokens=65536,
+                max_num_scheduled_tokens=max_num_scheduled_tokens,
+            ),
+        )
+
+        MetalPlatform.check_and_update_config(vllm_config)
+
+        assert vllm_config.scheduler_config.enable_chunked_prefill is False
+        assert vllm_config.scheduler_config.max_num_batched_tokens == 65536
+        assert (
+            vllm_config.scheduler_config.max_num_scheduled_tokens
+            == max_num_scheduled_tokens
+        )
 
     def test_check_and_update_config_applies_stt_scheduler_policy(
         self, monkeypatch: pytest.MonkeyPatch

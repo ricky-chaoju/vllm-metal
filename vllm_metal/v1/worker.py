@@ -29,6 +29,7 @@ from vllm_metal.config import (
 )
 from vllm_metal.paged_attention_backend.hybrid import HybridPagedAttentionBackend
 from vllm_metal.paged_attention_backend.mha import MHAPagedAttentionBackend
+from vllm_metal.paged_attention_backend.mla import MLAPagedAttentionBackend
 from vllm_metal.platform import MetalPlatform
 from vllm_metal.stt.config import STT_SCHED_AVAILABLE_BYTES
 from vllm_metal.utils import set_wired_limit
@@ -275,14 +276,13 @@ class MetalWorker(WorkerBase):
         backend.initialize(num_blocks)
         n_patched = backend.patch_model(runner.model)
         logger.info(
-            "Metal kernel paged attention enabled: %d layers patched, "
-            "%d blocks allocated (block_size=%d, kv_heads=%d, head_dim=%d, hybrid=%s)",
+            "Paged attention enabled: %d layers patched, "
+            "%d blocks allocated (block_size=%d, hybrid=%s, mla=%s)",
             n_patched,
             num_blocks,
             block_size,
-            runner.num_kv_heads,
-            runner.head_dim,
             runner.is_hybrid,
+            runner.is_mla,
         )
 
         runner._paged_attention_backend = backend
@@ -304,6 +304,13 @@ class MetalWorker(WorkerBase):
                 linear_value_head_dim=runner.linear_value_head_dim,
                 linear_conv_kernel_dim=runner.linear_conv_kernel_dim,
                 linear_conv_dim=runner.linear_conv_dim,
+                block_size=block_size,
+                dtype=runner.kv_cache_dtype,
+            )
+        if runner.is_mla:
+            return MLAPagedAttentionBackend(
+                num_layers=runner.num_layers,
+                latent_dim=runner.mla_latent_dim,
                 block_size=block_size,
                 dtype=runner.kv_cache_dtype,
             )
