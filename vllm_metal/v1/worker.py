@@ -175,6 +175,14 @@ class MetalWorker(WorkerBase):
         runner = self.model_runner
         block_size = self.metal_config.block_size
 
+        if runner.is_hybrid:
+            raise RuntimeError(
+                "Paged attention is not yet supported for hybrid models "
+                "(Qwen3.5). Linear attention kernel is not implemented "
+                "(Stage C of #194). Use the mlx_lm inline cache path instead "
+                "by unsetting VLLM_METAL_USE_PAGED_ATTENTION."
+            )
+
         # --- Determine memory fraction ---
         if self.metal_config.is_auto_memory:
             fraction = PAGED_ATTENTION_DEFAULT_MEMORY_FRACTION
