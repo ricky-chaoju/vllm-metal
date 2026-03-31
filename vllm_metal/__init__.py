@@ -46,6 +46,18 @@ def _apply_macos_defaults() -> None:
     os.environ.setdefault("VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE", "shm")
     os.environ.setdefault("VLLM_USE_RAY_WRAPPED_PP_COMM", "0")
 
+    # Prevent the upstream CpuPlatform.check_and_update_config() from
+    # overriding KV cache settings.  Without this, the CPU platform
+    # allocates 96 GiB of host-memory KV cache (VLLM_CPU_KVCACHE_SPACE)
+    # which is meaningless on Metal / MLX.
+    os.environ.setdefault("VLLM_CPU_KVCACHE_SPACE", "0")
+
+    # Force MetalPlatform in ALL processes via env var.  The entry-point
+    # plugin system can fail in spawned subprocesses (maturin editable
+    # installs aren't always discoverable).  This env var is read by a
+    # small patch in vllm/platforms/__init__.py.
+    os.environ.setdefault("VLLM_PLATFORM_CLASS", "vllm_metal.platform.MetalPlatform")
+
 
 # Lazy imports to avoid loading vLLM dependencies when just importing the Rust extension
 def __getattr__(name):
@@ -87,6 +99,7 @@ def _register() -> str | None:
     """Register the Metal platform plugin with vLLM.
 
     This is the entry point for vLLM's platform plugin system.
+    Called both in the main process and in spawned subprocesses.
 
     Returns:
         Fully qualified class name if platform is available, None otherwise
@@ -95,9 +108,39 @@ def _register() -> str | None:
 
     from vllm_metal.platform import MetalPlatform
 
-    if MetalPlatform.is_available():
+    try:
+        available = MetalPlatform.is_available()
+    except Exception:
+        available = False
+
+    if available:
         return "vllm_metal.platform.MetalPlatform"
     return None
+
+
+def _ensure_metal_platform() -> None:
+    """Force-set MetalPlatform as the active platform in every process.
+
+    vLLM v0.17.1 spawns APIServer and EngineCore as separate processes.
+    The upstream CpuPlatform builtin plugin can win the platform race
+    (macOS is always detected as CPU-capable) when the lazy
+    ``current_platform`` resolution runs before OOT plugins are
+    properly loaded.
+
+    This function is called from ``_apply_macos_defaults()`` (which
+    runs at import time via the entry-point) and forcibly sets
+    ``current_platform`` so that subsequent ``check_and_update_config``
+    calls use MetalPlatform, not CpuPlatform.
+    """
+    try:
+        import vllm.platforms as _plat
+
+        from vllm_metal.platform import MetalPlatform
+
+        if MetalPlatform.is_available():
+            _plat.current_platform = MetalPlatform()
+    except Exception:
+        pass  # Best-effort; don't crash if vllm internals change.
 
 
 def _register_ops() -> None:

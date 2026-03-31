@@ -226,6 +226,13 @@ class MetalPlatform(Platform):
         if config.debug:
             logger.info(f"Metal config: {config}")
 
+        logger.info(
+            "MetalPlatform.check_and_update_config: backend=%s, worker=%s, pp=%d",
+            parallel_config.distributed_executor_backend,
+            parallel_config.worker_cls,
+            parallel_config.pipeline_parallel_size,
+        )
+
         # The upstream CpuPlatform.check_and_update_config() may have
         # already run (Metal uses device_name="cpu" for PyTorch compat)
         # and overridden the executor backend and worker class.
