@@ -158,7 +158,7 @@ class MetalPlatform(Platform):
             # local_rank, which is always 0 for TP=1.  Log rather than
             # crash so that unexpected calls are visible but not fatal.
             logger.warning(
-                "Metal ignoring set_device(%d); only device 0 exists",
+                "Metal ignoring set_device(%s); only device 0 exists",
                 device_id,
             )
 

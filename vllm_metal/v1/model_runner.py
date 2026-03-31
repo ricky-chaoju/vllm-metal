@@ -1088,7 +1088,9 @@ class MetalModelRunner:
             h = input_or_hidden
 
         # Build causal mask using the first assigned layer's cache.
-        mask = mx.nn.MultiHeadAttention.create_additive_causal_mask(
+        import mlx.nn as nn
+
+        mask = nn.MultiHeadAttention.create_additive_causal_mask(
             h.shape[1], dtype=h.dtype
         )
         # Some architectures offset the mask by past sequence length.
