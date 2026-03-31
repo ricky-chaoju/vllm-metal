@@ -31,7 +31,8 @@ PATCH_LINES = """\
             # VLLM_PLATFORM_CLASS override (vllm-metal patch)
             # OOT plugins can set this env var to force a platform in
             # spawned subprocesses where entry-point discovery fails.
-            _override = os.environ.get("VLLM_PLATFORM_CLASS")
+            import os as _os
+            _override = _os.environ.get("VLLM_PLATFORM_CLASS")
             if _override:
                 try:
                     _current_platform = resolve_obj_by_qualname(_override)()
