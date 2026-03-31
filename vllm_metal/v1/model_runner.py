@@ -19,7 +19,6 @@ from threading import Lock
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import mlx.core as mx
-import numpy as np
 import torch
 from mlx_lm import load as mlx_lm_load
 from mlx_lm import stream_generate
@@ -1119,14 +1118,20 @@ class MetalModelRunner:
 
     def _hidden_to_intermediate(self, hidden: mx.array) -> IntermediateTensors:
         """Convert MLX hidden states to IntermediateTensors for PP transport."""
-        hidden_np = np.array(hidden, copy=False)
-        hidden_torch = torch.from_numpy(hidden_np).contiguous()
+        # bfloat16 not supported by numpy; cast to float32 for transport.
+        if hidden.dtype == mx.bfloat16:
+            hidden = hidden.astype(mx.float32)
+        hidden_torch = mlx_to_torch(hidden, device=torch.device("cpu"))
         return IntermediateTensors(tensors={"hidden_states": hidden_torch})
 
     def _intermediate_to_hidden(self, intermediate: IntermediateTensors) -> mx.array:
         """Convert IntermediateTensors back to MLX hidden states."""
         t = intermediate.tensors["hidden_states"]
-        return mx.array(t.numpy())
+        h = torch_to_mlx(t)
+        # Restore to model's compute dtype (bfloat16) if needed.
+        if h.dtype != mx.bfloat16:
+            h = h.astype(mx.bfloat16)
+        return h
 
     def _extract_logits(self, model_output: Any) -> mx.array:
         """Extract logits from model output.
