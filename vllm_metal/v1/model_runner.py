@@ -1369,7 +1369,12 @@ class MetalModelRunner:
                 pp_out = self._pp_forward(hidden, cache)
 
             if not self._pp_is_last:
-                mx.eval(pp_out, *[c.state for c in cache])
+                # Only eval cache entries that were actually populated
+                # (PP ranks only use a subset of layers).
+                cache_states = [
+                    c.state for c in cache if getattr(c, "keys", None) is not None
+                ]
+                mx.eval(pp_out, *cache_states)
                 return self._hidden_to_intermediate(pp_out)
 
             # Last rank: pp_out is logits
