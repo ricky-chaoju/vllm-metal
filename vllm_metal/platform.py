@@ -10,9 +10,6 @@ import torch
 from vllm.platforms.interface import DeviceCapability, Platform, PlatformEnum
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
-from vllm_metal.config import get_config
-from vllm_metal.utils import get_model_download_path
-
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.attention.selector import AttentionSelectorConfig
@@ -69,6 +66,8 @@ class MetalPlatform(Platform):
         Returns:
             Total memory in bytes
         """
+        from vllm_metal.config import get_config
+
         config = get_config()
         total_memory = psutil.virtual_memory().total
         # In auto mode, report full memory - actual allocation is dynamic
@@ -86,6 +85,8 @@ class MetalPlatform(Platform):
         Returns:
             Available memory in bytes
         """
+        from vllm_metal.config import get_config
+
         config = get_config()
         available = psutil.virtual_memory().available
         # In auto mode, report full available memory - actual allocation is dynamic
@@ -158,6 +159,8 @@ class MetalPlatform(Platform):
                 device_id,
             )
 
+        from vllm_metal.config import get_config
+
         config = get_config()
         if config.use_mlx:
             import mlx.core as mx
@@ -216,6 +219,8 @@ class MetalPlatform(Platform):
         Args:
             vllm_config: vLLM configuration object
         """
+        from vllm_metal.config import get_config
+
         config = get_config()
         parallel_config = vllm_config.parallel_config
         cache_config = vllm_config.cache_config
@@ -301,6 +306,8 @@ class MetalPlatform(Platform):
             model_config.disable_cascade_attn = True
 
         # STT model detection — set tokenizer fallback if not already configured.
+        from vllm_metal.utils import get_model_download_path
+
         resolved_model = (
             get_model_download_path(model_config.model)
             if model_config is not None
