@@ -1383,7 +1383,9 @@ class MetalModelRunner:
                     c.state for c in cache if getattr(c, "keys", None) is not None
                 ]
                 mx.eval(pp_out, *cache_states)
-                return self._hidden_to_intermediate(pp_out)
+                # Return (IntermediateTensors, cache) so execute_model
+                # can create a RequestState for decode steps.
+                return (self._hidden_to_intermediate(pp_out), cache)
 
             # Last rank: pp_out is logits
             model_output = pp_out
@@ -1399,12 +1401,18 @@ class MetalModelRunner:
             # Fast path: native MLX greedy sampling
             next_token_mlx = _mlx_greedy_sample(last_logits)
             # Single eval for logits, token, and cache state together
-            mx.eval(next_token_mlx, *[c.state for c in cache if getattr(c, "keys", None) is not None])
+            mx.eval(
+                next_token_mlx,
+                *[c.state for c in cache if getattr(c, "keys", None) is not None],
+            )
             next_token = int(next_token_mlx.item())
         else:
             # Slow path: use vLLM sampler for advanced sampling
             # Single eval for logits and cache state together
-            mx.eval(last_logits, *[c.state for c in cache if getattr(c, "keys", None) is not None])
+            mx.eval(
+                last_logits,
+                *[c.state for c in cache if getattr(c, "keys", None) is not None],
+            )
             # Convert to torch for sampling
             logits_torch = mlx_to_torch(
                 last_logits.astype(mx.float32), device=self.device
@@ -1464,9 +1472,11 @@ class MetalModelRunner:
 
             if not self._pp_is_last:
                 mx.eval(pp_out)
-                # Extract caches before returning
+                # Extract caches and update state for next decode step
                 for i, (_req_id, state) in enumerate(decode_reqs):
                     state.cache = _extract_kv_cache(batch_cache, i)
+                    state.token_ids.append(0)  # dummy token
+                    state.generated_tokens += 1
                 return self._hidden_to_intermediate(pp_out)
 
             model_output = pp_out
@@ -1552,6 +1562,9 @@ class MetalModelRunner:
 
                 if not self._pp_is_last:
                     mx.eval(pp_out)
+                    # Update state so next decode step has correct token count
+                    state.token_ids.append(0)  # dummy token
+                    state.generated_tokens += 1
                     return self._hidden_to_intermediate(pp_out)
 
                 model_output = pp_out
@@ -1861,9 +1874,26 @@ class MetalModelRunner:
                     generator=generator,
                     intermediate_tensors=intermediate_tensors,
                 )
-                # Non-last PP rank: propagate IntermediateTensors
-                if isinstance(prefill_result, IntermediateTensors):
-                    return prefill_result
+                # Non-last PP rank: propagate IntermediateTensors but
+                # still create a RequestState so decode steps can find it.
+                # _prefill_single returns (IntermediateTensors, cache) for
+                # non-last PP ranks.
+                if (
+                    isinstance(prefill_result, tuple)
+                    and len(prefill_result) == 2
+                    and isinstance(prefill_result[0], IntermediateTensors)
+                ):
+                    intermediate_out, pp_cache = prefill_result
+                    self._request_states[req_id] = RequestState(
+                        token_ids=list(token_ids) + [0],  # dummy token
+                        prompt_len=len(token_ids),
+                        cache=pp_cache,
+                        sampling_params=sampling_params,
+                        generator=generator,
+                        generated_tokens=1,
+                        block_ids=[],
+                    )
+                    return intermediate_out
                 next_token, cache = prefill_result
                 sampled_tokens.append([next_token])
                 self._request_states[req_id] = RequestState(
