@@ -1399,12 +1399,12 @@ class MetalModelRunner:
             # Fast path: native MLX greedy sampling
             next_token_mlx = _mlx_greedy_sample(last_logits)
             # Single eval for logits, token, and cache state together
-            mx.eval(next_token_mlx, *[c.state for c in cache])
+            mx.eval(next_token_mlx, *[c.state for c in cache if getattr(c, "keys", None) is not None])
             next_token = int(next_token_mlx.item())
         else:
             # Slow path: use vLLM sampler for advanced sampling
             # Single eval for logits and cache state together
-            mx.eval(last_logits, *[c.state for c in cache])
+            mx.eval(last_logits, *[c.state for c in cache if getattr(c, "keys", None) is not None])
             # Convert to torch for sampling
             logits_torch = mlx_to_torch(
                 last_logits.astype(mx.float32), device=self.device
