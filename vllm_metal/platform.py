@@ -5,13 +5,12 @@ import logging
 import platform as py_platform
 from typing import TYPE_CHECKING
 
-import psutil
-import torch
 from vllm.platforms.interface import DeviceCapability, Platform, PlatformEnum
-from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 if TYPE_CHECKING:
+    import torch
     from vllm.config import VllmConfig
+    from vllm.v1.attention.backends.registry import AttentionBackendEnum
     from vllm.v1.attention.selector import AttentionSelectorConfig
 
 logger = logging.getLogger(__name__)
@@ -66,6 +65,8 @@ class MetalPlatform(Platform):
         Returns:
             Total memory in bytes
         """
+        import psutil
+
         from vllm_metal.config import get_config
 
         config = get_config()
@@ -85,6 +86,8 @@ class MetalPlatform(Platform):
         Returns:
             Available memory in bytes
         """
+        import psutil
+
         from vllm_metal.config import get_config
 
         config = get_config()
@@ -187,6 +190,7 @@ class MetalPlatform(Platform):
             device_id: Device index (ignored)
         """
         import mlx.core as mx
+        import torch
 
         # Prefer an explicit MLX barrier when available; otherwise force evaluation.
         # `mx.eval([])` is a no-op, so we evaluate a tiny scalar as a safe fallback.
@@ -199,7 +203,7 @@ class MetalPlatform(Platform):
             torch.mps.synchronize()
 
     @classmethod
-    def get_torch_device(cls, device_id: int = 0) -> torch.device:
+    def get_torch_device(cls, device_id: int = 0) -> "torch.device":
         """Get the corresponding PyTorch device.
 
         Args:
@@ -208,6 +212,8 @@ class MetalPlatform(Platform):
         Returns:
             PyTorch device (MPS or CPU)
         """
+        import torch
+
         if torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
@@ -340,6 +346,8 @@ class MetalPlatform(Platform):
         attn_selector_config: "AttentionSelectorConfig",
     ) -> str:
         """Get the attention backend class for Metal."""
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
         if selected_backend and selected_backend != AttentionBackendEnum.CPU_ATTN:
             logger.info(f"Cannot use {selected_backend} backend on Metal/MLX.")
         if attn_selector_config.use_mla:
