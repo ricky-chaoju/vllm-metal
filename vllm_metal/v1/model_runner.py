@@ -1089,18 +1089,10 @@ class MetalModelRunner:
         else:
             h = input_or_hidden
 
-        # Build causal mask using the first assigned layer's cache.
-        import mlx.nn as nn
+        # Build causal mask accounting for cached KV sequence length.
+        from mlx_lm.models.base import create_attention_mask
 
-        mask = nn.MultiHeadAttention.create_additive_causal_mask(
-            h.shape[1], dtype=h.dtype
-        )
-        # Some architectures offset the mask by past sequence length.
-        if cache and hasattr(cache[start], "offset"):
-            offset = cache[start].offset
-            if offset > 0:
-                prefix = mx.zeros((h.shape[1], offset), dtype=h.dtype)
-                mask = mx.concatenate([prefix, mask], axis=-1)
+        mask = create_attention_mask(h, cache[start] if cache else None)
 
         for i in range(start, end):
             h = inner.layers[i](h, mask, cache=cache[i])
