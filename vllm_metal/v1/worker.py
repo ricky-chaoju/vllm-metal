@@ -10,10 +10,12 @@ import mlx.core as mx
 from vllm.config import VllmConfig
 from vllm.distributed import (
     ensure_model_parallel_initialized,
+    get_pp_group,
     init_distributed_environment,
 )
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
+from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
@@ -48,8 +50,26 @@ def init_worker_distributed_environment(
     distributed_init_method: str,
     local_rank: int,
 ) -> None:
-    """Initialize distributed environment for Metal worker."""
+    """Initialize distributed environment for Metal worker.
+
+    When using Ray on macOS, Gloo's transport layer cannot establish
+    peer connections over bridge / Thunderbolt interfaces.  In that
+    case we skip ``torch.distributed`` entirely — the Ray compiled DAG
+    handles all inter-node tensor transport via its own channels.
+    """
     parallel_config = vllm_config.parallel_config
+
+    if parallel_config.distributed_executor_backend == "ray":
+        # Ray mode: skip Gloo (broken on macOS multi-node).
+        # PP metadata is set directly on the model runner via
+        # MetalWorker._init_pp_metadata().
+        logger.info(
+            "Ray mode: skipping Gloo init (rank=%d, world_size=%d). "
+            "Tensor transport handled by Ray compiled DAG.",
+            rank,
+            parallel_config.world_size,
+        )
+        return
 
     init_distributed_environment(
         parallel_config.world_size,
@@ -134,6 +154,37 @@ class MetalWorker(WorkerBase):
         self.model_runner = MetalModelRunner(
             vllm_config=self.vllm_config,
             device=self.device,
+        )
+
+        # In Ray mode, pass PP metadata directly to the runner since
+        # get_pp_group() is not available (Gloo skipped).
+        if self.parallel_config.distributed_executor_backend == "ray":
+            self._init_pp_metadata()
+
+    def _init_pp_metadata(self) -> None:
+        """Set PP metadata on the model runner for Ray mode.
+
+        When Gloo is skipped, ``get_pp_group()`` is unavailable.
+        We derive rank / world_size from ``parallel_config`` and the
+        worker's global ``self.rank`` instead.
+        """
+        pp_size = self.parallel_config.pipeline_parallel_size
+        tp_size = self.parallel_config.tensor_parallel_size
+        # PP rank = global_rank // tp_size (TP groups are contiguous)
+        pp_rank = self.rank // tp_size
+
+        self.model_runner._pp_rank = pp_rank
+        self.model_runner._pp_size = pp_size
+        self.model_runner._pp_is_first = pp_rank == 0
+        self.model_runner._pp_is_last = pp_rank == pp_size - 1
+
+        logger.info(
+            "Ray PP metadata: rank=%d, pp_rank=%d/%d, first=%s, last=%s",
+            self.rank,
+            pp_rank,
+            pp_size,
+            self.model_runner._pp_is_first,
+            self.model_runner._pp_is_last,
         )
 
     def load_model(self) -> None:
@@ -432,15 +483,44 @@ class MetalWorker(WorkerBase):
     def execute_model(
         self, scheduler_output: SchedulerOutput
     ) -> ModelRunnerOutput | None:
-        """Execute model inference.
+        """Execute model inference with optional pipeline-parallel support.
+
+        For PP setups (world_size > 1):
+        - Non-first ranks receive intermediate tensors from the previous stage.
+        - Non-last ranks send intermediate tensors to the next stage and
+          return None (no sampling).
 
         Args:
             scheduler_output: Scheduler output with batch information
 
         Returns:
-            Model runner output with generated tokens
+            Model runner output with generated tokens, or None for
+            non-last PP stages.
         """
-        return self.model_runner.execute_model(scheduler_output)
+        # In Ray mode, execute_model_ray() (upstream RayWorkerWrapper)
+        # calls model_runner.execute_model() directly, bypassing this
+        # method. This path is only used for non-Ray (Gloo) PP.
+        import torch.distributed as torch_dist
+
+        intermediate_tensors: IntermediateTensors | None = None
+
+        if torch_dist.is_initialized():
+            pp = get_pp_group()
+            # Receive hidden states from the previous PP stage
+            if pp.world_size > 1 and not pp.is_first_rank:
+                tensor_dict = pp.recv_tensor_dict()
+                if tensor_dict is not None:
+                    intermediate_tensors = IntermediateTensors(tensor_dict)
+
+        output = self.model_runner.execute_model(scheduler_output, intermediate_tensors)
+
+        # Forward hidden states to the next PP stage
+        if isinstance(output, IntermediateTensors):
+            if torch_dist.is_initialized():
+                get_pp_group().send_tensor_dict(output.tensors)
+            return None
+
+        return output
 
     def sample_tokens(
         self, grammar_output: GrammarOutput | None

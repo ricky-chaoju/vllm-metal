@@ -41,6 +41,11 @@ def _apply_macos_defaults() -> None:
         "Set VLLM_WORKER_MULTIPROC_METHOD explicitly to override."
     )
 
+    # Ray on Metal: no NCCL, use shared-memory DAG channels and skip
+    # the RayPPCommunicator CUDA registration.
+    os.environ.setdefault("VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE", "shm")
+    os.environ.setdefault("VLLM_USE_RAY_WRAPPED_PP_COMM", "0")
+
 
 # Lazy imports to avoid loading vLLM dependencies when just importing the Rust extension
 def __getattr__(name):

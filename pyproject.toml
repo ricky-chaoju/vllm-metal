@@ -48,6 +48,10 @@ stt = [
     "librosa>=0.10.2",
     "numba>=0.59.0",  # Required by librosa on Python 3.12+
 ]
+ray = [
+    # Distributed multi-node inference (Pipeline Parallel)
+    "ray[default]>=2.9.0",
+]
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=0.21.0",
@@ -55,7 +59,7 @@ dev = [
     "mypy>=1.19.1",
 ]
 all = [
-    "vllm-metal[stt,dev]",
+    "vllm-metal[stt,ray,dev]",
 ]
 
 [project.urls]

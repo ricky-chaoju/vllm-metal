@@ -34,6 +34,12 @@ class MetalPlatform(Platform):
     device_type: str = "cpu"  # PyTorch device type (use CPU for compatibility)
     dispatch_key: str = "CPU"  # PyTorch dispatch key
 
+    # Ray distributed support — use "GPU" as the resource key so that
+    # Ray's get_accelerator_ids() works when started with --num-gpus=1.
+    ray_device_key: str = "GPU"
+    device_control_env_var: str = "VLLM_METAL_VISIBLE_DEVICES"
+    ray_noset_device_env_vars: list[str] = []
+
     @classmethod
     def get_device_name(cls, device_id: int = 0) -> str:
         """Get the name of the Metal device.
@@ -146,8 +152,13 @@ class MetalPlatform(Platform):
             device_id: Device index (must be 0 for Metal)
         """
         if device_id != 0:
-            msg = f"Metal only supports device 0, got {device_id}"
-            raise ValueError(msg)
+            # In PP setups the upstream code may call set_device with
+            # local_rank, which is always 0 for TP=1.  Log rather than
+            # crash so that unexpected calls are visible but not fatal.
+            logger.warning(
+                "Metal ignoring set_device(%d); only device 0 exists",
+                device_id,
+            )
 
         config = get_config()
         if config.use_mlx:
@@ -215,12 +226,24 @@ class MetalPlatform(Platform):
         if config.debug:
             logger.info(f"Metal config: {config}")
 
-        # Set worker class for Metal
-        if parallel_config.worker_cls == "auto":
-            parallel_config.worker_cls = "vllm_metal.v1.worker.MetalWorker"
+        # The upstream CpuPlatform.check_and_update_config() may have
+        # already run (Metal uses device_name="cpu" for PyTorch compat)
+        # and overridden the executor backend and worker class.
+        # We must unconditionally restore the correct Metal values.
 
-        # Set executor backend (use uniproc for single device)
-        if parallel_config.distributed_executor_backend in ("auto", None):
+        # Always set worker class for Metal (CpuPlatform may have set CPUWorker)
+        parallel_config.worker_cls = "vllm_metal.v1.worker.MetalWorker"
+
+        # Restore executor backend — CpuPlatform forces "mp", but Metal
+        # needs "uni" (single device) or "ray" (multi-node PP).
+        if parallel_config.pipeline_parallel_size > 1:
+            parallel_config.distributed_executor_backend = "ray"
+            if parallel_config.tensor_parallel_size > 1:
+                raise ValueError(
+                    "Metal does not support tensor_parallel_size > 1. "
+                    "Use pipeline_parallel_size for multi-node inference."
+                )
+        elif parallel_config.distributed_executor_backend != "ray":
             parallel_config.distributed_executor_backend = "uni"
 
         # Disable features not supported on Metal

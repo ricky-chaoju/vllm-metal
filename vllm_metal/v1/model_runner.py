@@ -19,6 +19,7 @@ from threading import Lock
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import mlx.core as mx
+import numpy as np
 import torch
 from mlx_lm import load as mlx_lm_load
 from mlx_lm import stream_generate
@@ -34,8 +35,10 @@ from mlx_lm.models.cache import (
 # mlx_vlm for vision-language models
 from mlx_vlm import load as mlx_vlm_load
 from vllm.config import VllmConfig
+from vllm.distributed import get_pp_group
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
+from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
@@ -773,6 +776,7 @@ class MetalModelRunner:
                 self._extract_model_args()
                 self._resolve_model_dims()
                 self._initialize_kv_cache_dtype()
+                self._init_pp_config()
                 return
 
         # Load model using appropriate backend
@@ -797,6 +801,7 @@ class MetalModelRunner:
         self._extract_model_args()
         self._resolve_model_dims()
         self._initialize_kv_cache_dtype()
+        self._init_pp_config()
         load_time = time.time() - start_time
         logger.info(f"Model loaded in {load_time:.2f}s: {model_name}")
 
@@ -967,6 +972,159 @@ class MetalModelRunner:
                 self.linear_num_k_heads * self.linear_key_head_dim * 2
                 + self.linear_num_v_heads * self.linear_value_head_dim
             )
+
+    # === Pipeline Parallel helpers ===
+
+    def _init_pp_config(self) -> None:
+        """Initialise pipeline-parallel state after model loading.
+
+        Must be called after ``_resolve_model_dims()`` so that
+        ``self.num_layers`` is available.  When PP is not active
+        (``pp_size == 1``) this is a no-op that keeps the default
+        values written in ``__init__``.
+
+        In Ray mode the worker pre-sets ``_pp_rank``, ``_pp_size``,
+        ``_pp_is_first``, ``_pp_is_last`` before ``load_model()``.
+        We detect this and skip the ``get_pp_group()`` call which
+        requires Gloo (unavailable on macOS multi-node).
+        """
+        if not hasattr(self, "_pp_size") or self._pp_size <= 0:
+            # Non-Ray path: read from torch.distributed PP group.
+            pp = get_pp_group()
+            self._pp_rank: int = pp.rank_in_group
+            self._pp_size: int = pp.world_size
+            self._pp_is_first: bool = pp.is_first_rank
+            self._pp_is_last: bool = pp.is_last_rank
+
+        if self._pp_size <= 1:
+            self._pp_layer_range: tuple[int, int] = (0, self.num_layers)
+            return
+
+        self._pp_layer_range = self._compute_layer_assignment()
+        start, end = self._pp_layer_range
+        logger.info(
+            "PP rank %d/%d: layers [%d, %d) of %d (first=%s, last=%s)",
+            self._pp_rank,
+            self._pp_size,
+            start,
+            end,
+            self.num_layers,
+            self._pp_is_first,
+            self._pp_is_last,
+        )
+
+    def _compute_layer_assignment(self) -> tuple[int, int]:
+        """Determine which layers this PP rank should execute.
+
+        Uses an even split by default.  Override with the environment
+        variable ``VLLM_METAL_PP_LAYER_SPLIT`` for asymmetric memory
+        configurations (e.g. ``"48,32"`` for an 80-layer model across
+        two ranks).
+
+        Returns:
+            ``(start_layer, end_layer)`` — exclusive end.
+        """
+        n = self.num_layers
+        custom = os.environ.get("VLLM_METAL_PP_LAYER_SPLIT")
+        if custom:
+            parts = [int(x) for x in custom.split(",")]
+            if len(parts) != self._pp_size:
+                raise ValueError(
+                    f"VLLM_METAL_PP_LAYER_SPLIT has {len(parts)} entries "
+                    f"but pipeline_parallel_size={self._pp_size}"
+                )
+            if sum(parts) != n:
+                raise ValueError(
+                    f"VLLM_METAL_PP_LAYER_SPLIT sums to {sum(parts)} "
+                    f"but model has {n} layers"
+                )
+            start = sum(parts[: self._pp_rank])
+            end = start + parts[self._pp_rank]
+            return (start, end)
+
+        # Default: even split (last rank gets remainder)
+        per_rank = n // self._pp_size
+        start = self._pp_rank * per_rank
+        end = n if self._pp_rank == self._pp_size - 1 else start + per_rank
+        return (start, end)
+
+    def _get_inner_model(self) -> Any:
+        """Return the inner transformer model (embed + layers + norm).
+
+        VLMs wrap it in ``model.language_model.model``; standard models
+        use ``model.model``.
+        """
+        if self._is_vlm and hasattr(self.model, "language_model"):
+            return self.model.language_model.model
+        return self.model.model
+
+    def _get_lm_head(self) -> Any:
+        """Return the lm_head projection layer."""
+        if self._is_vlm and hasattr(self.model, "language_model"):
+            return self.model.language_model.lm_head
+        return self.model.lm_head
+
+    def _pp_forward(
+        self,
+        input_or_hidden: mx.array,
+        cache: list[Any],
+    ) -> mx.array:
+        """PP-aware forward: run only the assigned layer range.
+
+        Args:
+            input_or_hidden: Token IDs (first rank) or hidden states
+                (subsequent ranks).
+            cache: Full KV cache list (indexed by global layer index).
+
+        Returns:
+            Hidden states (non-last rank) or logits (last rank).
+        """
+        inner = self._get_inner_model()
+        start, end = self._pp_layer_range
+
+        if self._pp_is_first:
+            h = inner.embed_tokens(input_or_hidden)
+        else:
+            h = input_or_hidden
+
+        # Build causal mask using the first assigned layer's cache.
+        mask = mx.nn.MultiHeadAttention.create_additive_causal_mask(
+            h.shape[1], dtype=h.dtype
+        )
+        # Some architectures offset the mask by past sequence length.
+        if cache and hasattr(cache[start], "offset"):
+            offset = cache[start].offset
+            if offset > 0:
+                prefix = mx.zeros((h.shape[1], offset), dtype=h.dtype)
+                mask = mx.concatenate([prefix, mask], axis=-1)
+
+        for i in range(start, end):
+            h = inner.layers[i](h, mask, cache=cache[i])
+
+        if self._pp_is_last:
+            h = inner.norm(h)
+            lm_head = self._get_lm_head()
+            # Handle tied embeddings
+            if hasattr(self.model, "args") and getattr(
+                self.model.args, "tie_word_embeddings", False
+            ):
+                logits = inner.embed_tokens.as_linear(h)
+            else:
+                logits = lm_head(h)
+            return logits
+
+        return h
+
+    def _hidden_to_intermediate(self, hidden: mx.array) -> IntermediateTensors:
+        """Convert MLX hidden states to IntermediateTensors for PP transport."""
+        hidden_np = np.array(hidden, copy=False)
+        hidden_torch = torch.from_numpy(hidden_np).contiguous()
+        return IntermediateTensors(tensors={"hidden_states": hidden_torch})
+
+    def _intermediate_to_hidden(self, intermediate: IntermediateTensors) -> mx.array:
+        """Convert IntermediateTensors back to MLX hidden states."""
+        t = intermediate.tensors["hidden_states"]
+        return mx.array(t.numpy())
 
     def _extract_logits(self, model_output: Any) -> mx.array:
         """Extract logits from model output.
@@ -1151,16 +1309,19 @@ class MetalModelRunner:
         token_ids: list[int],
         sampling_params: SamplingParams,
         generator: torch.Generator | None = None,
-    ) -> tuple[int, list[KVCache]]:
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> tuple[int, list[KVCache]] | IntermediateTensors:
         """Process a single prefill request.
 
         Args:
             req_id: Request ID
             token_ids: Prompt token IDs
             sampling_params: Sampling parameters for this request
+            intermediate_tensors: Hidden states from previous PP stage.
 
         Returns:
-            Tuple of (next_token, cache)
+            Tuple of (next_token, cache) on the last PP rank, or
+            IntermediateTensors on non-last ranks.
         """
         cache: list[KVCache]
         cached_prefix_len = 0
@@ -1197,7 +1358,22 @@ class MetalModelRunner:
         # Prefill: process remaining tokens (always at least the last token)
         tokens_to_process = token_ids[cached_prefix_len:]
         input_ids = mx.array([tokens_to_process], dtype=mx.int32)
-        model_output = self.model(input_ids, cache=cache)
+
+        if self._pp_size > 1:
+            if self._pp_is_first:
+                pp_out = self._pp_forward(input_ids, cache)
+            else:
+                hidden = self._intermediate_to_hidden(intermediate_tensors)
+                pp_out = self._pp_forward(hidden, cache)
+
+            if not self._pp_is_last:
+                mx.eval(pp_out, *[c.state for c in cache])
+                return self._hidden_to_intermediate(pp_out)
+
+            # Last rank: pp_out is logits
+            model_output = pp_out
+        else:
+            model_output = self.model(input_ids, cache=cache)
 
         logits = self._extract_logits(model_output)
 
@@ -1230,7 +1406,11 @@ class MetalModelRunner:
 
         return next_token, cache
 
-    def _batched_decode(self, decode_reqs: list[tuple[str, RequestState]]) -> list[int]:
+    def _batched_decode(
+        self,
+        decode_reqs: list[tuple[str, RequestState]],
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> list[int] | IntermediateTensors:
         """Process multiple decode requests in a single batched forward pass.
 
         Uses BatchKVCache to merge individual caches, run ONE forward pass,
@@ -1238,9 +1418,11 @@ class MetalModelRunner:
 
         Args:
             decode_reqs: List of (req_id, state) tuples
+            intermediate_tensors: Hidden states from previous PP stage.
 
         Returns:
-            List of next tokens for each request
+            List of next tokens for each request, or IntermediateTensors
+            on non-last PP ranks.
         """
         batch_size = len(decode_reqs)
 
@@ -1258,7 +1440,23 @@ class MetalModelRunner:
         batched_input = mx.array(last_tokens, dtype=mx.int32)[:, None]
 
         # === SINGLE FORWARD PASS FOR ALL REQUESTS ===
-        model_output = self.model(batched_input, cache=batch_cache)
+        if self._pp_size > 1:
+            if self._pp_is_first:
+                pp_out = self._pp_forward(batched_input, batch_cache)
+            else:
+                hidden = self._intermediate_to_hidden(intermediate_tensors)
+                pp_out = self._pp_forward(hidden, batch_cache)
+
+            if not self._pp_is_last:
+                mx.eval(pp_out)
+                # Extract caches before returning
+                for i, (_req_id, state) in enumerate(decode_reqs):
+                    state.cache = _extract_kv_cache(batch_cache, i)
+                return self._hidden_to_intermediate(pp_out)
+
+            model_output = pp_out
+        else:
+            model_output = self.model(batched_input, cache=batch_cache)
         logits = self._extract_logits(model_output)
 
         # Extract next token logits
@@ -1308,17 +1506,21 @@ class MetalModelRunner:
         return next_tokens
 
     def _sequential_decode(
-        self, decode_reqs: list[tuple[str, RequestState]]
-    ) -> list[int]:
+        self,
+        decode_reqs: list[tuple[str, RequestState]],
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> list[int] | IntermediateTensors:
         """Fallback: process decode requests sequentially.
 
         Used when batch size is 1 (no benefit from batching).
 
         Args:
             decode_reqs: List of (req_id, state) tuples
+            intermediate_tensors: Hidden states from previous PP stage.
 
         Returns:
-            List of next tokens for each request
+            List of next tokens for each request, or IntermediateTensors
+            on non-last PP ranks.
         """
         next_tokens = []
 
@@ -1326,7 +1528,20 @@ class MetalModelRunner:
             last_token = state.token_ids[-1] if state.token_ids else 0
             input_ids = mx.array([[last_token]], dtype=mx.int32)
 
-            model_output = self.model(input_ids, cache=state.cache)
+            if self._pp_size > 1:
+                if self._pp_is_first:
+                    pp_out = self._pp_forward(input_ids, state.cache)
+                else:
+                    hidden = self._intermediate_to_hidden(intermediate_tensors)
+                    pp_out = self._pp_forward(hidden, state.cache)
+
+                if not self._pp_is_last:
+                    mx.eval(pp_out)
+                    return self._hidden_to_intermediate(pp_out)
+
+                model_output = pp_out
+            else:
+                model_output = self.model(input_ids, cache=state.cache)
             logits = self._extract_logits(model_output)
             last_logits = logits[:, -1, :]
 
@@ -1514,18 +1729,26 @@ class MetalModelRunner:
         return prefill_next_tokens, decode_next_tokens
 
     def execute_model(
-        self, scheduler_output: SchedulerOutput
-    ) -> ModelRunnerOutput | None:
+        self,
+        scheduler_output: SchedulerOutput,
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> ModelRunnerOutput | IntermediateTensors | None:
         """Execute model inference with true batched decode.
 
         Key optimization: Uses BatchKVCache.merge() to combine individual
         KV caches and run a SINGLE forward pass for all decode requests.
 
+        For pipeline-parallel setups, non-last ranks return
+        ``IntermediateTensors`` instead of ``ModelRunnerOutput``.
+
         Args:
             scheduler_output: Scheduler output with batch information
+            intermediate_tensors: Hidden states from previous PP stage
+                (None for the first stage or single-device mode).
 
         Returns:
-            Model runner output with generated tokens
+            Model runner output, IntermediateTensors for non-last PP
+            stages, or None when async scheduling defers to sample_tokens.
         """
         if self.model is None:
             raise RuntimeError("Model not loaded")
@@ -1616,12 +1839,17 @@ class MetalModelRunner:
                         block_ids=sched_block_ids,
                     )
             else:
-                next_token, cache = self._prefill_single(
+                prefill_result = self._prefill_single(
                     req_id,
                     token_ids,
                     sampling_params,
                     generator=generator,
+                    intermediate_tensors=intermediate_tensors,
                 )
+                # Non-last PP rank: propagate IntermediateTensors
+                if isinstance(prefill_result, IntermediateTensors):
+                    return prefill_result
+                next_token, cache = prefill_result
                 sampled_tokens.append([next_token])
                 self._request_states[req_id] = RequestState(
                     token_ids=list(token_ids) + [next_token],
@@ -1718,10 +1946,19 @@ class MetalModelRunner:
 
                 if valid_decode_reqs:
                     if len(valid_decode_reqs) >= _MIN_BATCH_SIZE_FOR_BATCHING:
-                        decode_tokens = self._batched_decode(valid_decode_reqs)
+                        decode_result = self._batched_decode(
+                            valid_decode_reqs, intermediate_tensors
+                        )
                     else:
-                        decode_tokens = self._sequential_decode(valid_decode_reqs)
+                        decode_result = self._sequential_decode(
+                            valid_decode_reqs, intermediate_tensors
+                        )
 
+                    # Non-last PP rank: propagate IntermediateTensors
+                    if isinstance(decode_result, IntermediateTensors):
+                        return decode_result
+
+                    decode_tokens = decode_result
                     for i, (req_id, _) in enumerate(valid_decode_reqs):
                         req_ids.append(req_id)
                         req_id_to_index[req_id] = len(req_ids) - 1
