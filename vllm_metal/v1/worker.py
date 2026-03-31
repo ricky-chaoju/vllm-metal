@@ -44,6 +44,36 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _install_fake_pp_group(rank: int, pp_size: int, tp_size: int) -> None:
+    """Create a minimal fake PP group for Ray mode.
+
+    The upstream ``RayWorkerWrapper.execute_model_ray()`` calls
+    ``get_pp_group().is_last_rank`` to decide how to route outputs.
+    Since Gloo is unavailable on macOS multi-node, we install a
+    lightweight stand-in that provides the required rank metadata
+    without any network communication.
+    """
+    import types
+
+    import vllm.distributed.parallel_state as ps
+
+    pp_rank = rank // tp_size
+    fake = types.SimpleNamespace(
+        rank_in_group=pp_rank,
+        world_size=pp_size,
+        is_first_rank=(pp_rank == 0),
+        is_last_rank=(pp_rank == pp_size - 1),
+    )
+    ps._PP = fake  # type: ignore[assignment]
+    logger.info(
+        "Installed fake PP group: pp_rank=%d/%d, first=%s, last=%s",
+        pp_rank,
+        pp_size,
+        fake.is_first_rank,
+        fake.is_last_rank,
+    )
+
+
 def init_worker_distributed_environment(
     vllm_config: VllmConfig,
     rank: int,
@@ -68,6 +98,14 @@ def init_worker_distributed_environment(
             "Tensor transport handled by Ray compiled DAG.",
             rank,
             parallel_config.world_size,
+        )
+        # The upstream RayWorkerWrapper.execute_model_ray() calls
+        # get_pp_group().is_last_rank.  Since we skipped Gloo, we must
+        # install a minimal fake PP group so that call doesn't crash.
+        _install_fake_pp_group(
+            rank=rank,
+            pp_size=parallel_config.pipeline_parallel_size,
+            tp_size=parallel_config.tensor_parallel_size,
         )
         return
 
