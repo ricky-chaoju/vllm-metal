@@ -11,8 +11,6 @@ from vllm.platforms.interface import DeviceCapability, Platform, PlatformEnum
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 from vllm_metal.config import get_config
-from vllm_metal.stt.detection import is_stt_model
-from vllm_metal.stt.policy import apply_stt_scheduler_policy
 from vllm_metal.utils import get_model_download_path
 
 if TYPE_CHECKING:
@@ -308,6 +306,11 @@ class MetalPlatform(Platform):
             if model_config is not None
             else None
         )
+        # Lazy import to avoid circular import during platform detection.
+        # vllm_metal.stt → vllm.config → vllm.platforms (circular).
+        from vllm_metal.stt.detection import is_stt_model
+        from vllm_metal.stt.policy import apply_stt_scheduler_policy
+
         if resolved_model is not None and is_stt_model(resolved_model):
             was_async_scheduling = bool(scheduler_config.async_scheduling)
             apply_stt_scheduler_policy(model_config, scheduler_config)
