@@ -602,6 +602,9 @@ class MetalModelRunner:
     Uses true batched decode with BatchKVCache for efficient parallel processing.
     """
 
+    # Required by RayWorkerWrapper.execute_model_ray() for PP.
+    supports_mm_inputs: bool = False
+
     def __init__(
         self,
         vllm_config: VllmConfig,
