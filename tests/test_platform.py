@@ -2,7 +2,8 @@
 """Tests for Metal platform."""
 
 import platform
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -24,10 +25,12 @@ class TestMetalPlatform:
         is_stt: bool,
     ) -> None:
         monkeypatch.setattr(
-            "vllm_metal.platform.get_model_download_path",
+            "vllm_metal.utils.get_model_download_path",
             lambda model: model,
         )
-        monkeypatch.setattr("vllm_metal.platform.is_stt_model", lambda _model: is_stt)
+        monkeypatch.setattr(
+            "vllm_metal.stt.detection.is_stt_model", lambda _model: is_stt
+        )
 
     def test_device_name(self) -> None:
         """Test device name retrieval."""
@@ -122,6 +125,29 @@ class TestMetalPlatform:
         after = mx.default_device()
 
         assert before == after
+
+    def test_is_available_propagates_unexpected_mlx_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unexpected MLX errors should surface instead of looking unavailable."""
+        monkeypatch.setattr("vllm_metal.platform.py_platform.machine", lambda: "arm64")
+        monkeypatch.setattr("vllm_metal.platform.py_platform.system", lambda: "Darwin")
+
+        mlx_module = ModuleType("mlx")
+        mlx_core = ModuleType("mlx.core")
+
+        class _BrokenMetal:
+            @staticmethod
+            def is_available() -> bool:
+                raise ValueError("unexpected mlx regression")
+
+        mlx_core.metal = _BrokenMetal()
+        mlx_module.core = mlx_core
+        monkeypatch.setitem(sys.modules, "mlx", mlx_module)
+        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+        with pytest.raises(ValueError, match="unexpected mlx regression"):
+            MetalPlatform.is_available()
 
     def test_torch_device(self) -> None:
         """Test PyTorch device retrieval."""
