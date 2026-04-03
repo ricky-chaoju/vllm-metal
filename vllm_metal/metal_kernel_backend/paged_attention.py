@@ -64,11 +64,14 @@ class MetalKernelPagedAttentionWrapper(nn.Module):
             self, "_mk_cache_idx", cache_idx if cache_idx is not None else layer_idx
         )
 
-    def __call__(self, x: mx.array, mask: Any = None, cache: Any = None) -> mx.array:
+    def __call__(
+        self, x: mx.array, mask: Any = None, cache: Any = None,
+        position_ids: Any = None, **kwargs: Any,
+    ) -> mx.array:
         ctx = get_context()
         if ctx is None:
             # No paged context → delegate to original attention
-            return self._inner(x, mask=mask, cache=cache)
+            return self._inner(x, mask=mask, cache=cache, position_ids=position_ids, **kwargs)
 
         inner = self._inner
 

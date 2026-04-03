@@ -55,9 +55,13 @@ class GDNPagedAttentionWrapper(nn.Module):
         object.__setattr__(self, "_gdn_cache_idx", cache_idx)
         object.__setattr__(self, "_gdn_state_cache", state_cache)
 
-    def __call__(self, x: mx.array, mask: Any = None, cache: Any = None) -> mx.array:
+    def __call__(
+        self, x: mx.array, mask: Any = None, cache: Any = None,
+        position_ids: Any = None, **kwargs: Any,
+    ) -> mx.array:
         ctx = get_context()
         if ctx is None:
+            # GDN is recurrent — does not use position_ids; drop it.
             return self._inner(x, mask=mask, cache=cache)
 
         inner = self._inner
