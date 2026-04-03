@@ -56,8 +56,12 @@ class GDNPagedAttentionWrapper(nn.Module):
         object.__setattr__(self, "_gdn_state_cache", state_cache)
 
     def __call__(
-        self, x: mx.array, mask: Any = None, cache: Any = None,
-        position_ids: Any = None, **kwargs: Any,
+        self,
+        x: mx.array,
+        mask: mx.array | None = None,
+        cache: nn.Module | None = None,
+        position_ids: mx.array | None = None,
+        **kwargs: Any,
     ) -> mx.array:
         ctx = get_context()
         if ctx is None:
