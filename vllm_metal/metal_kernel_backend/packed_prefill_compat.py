@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import mlx.core as mx
 
 
 def _apply_mrope_segment(
-    rotary_emb: object,
+    rotary_emb: Callable[..., tuple[mx.array, mx.array]],
     q_seg: mx.array,
     k_seg: mx.array,
     offset: int,
@@ -27,7 +29,7 @@ def _apply_mrope_segment(
     pos = mx.arange(offset, offset + seg_len)
     # M-RoPE: (3, 1, seg_len) — 3 sections, batch=1
     position_ids = mx.broadcast_to(pos[None, None, :], (3, 1, seg_len))
-    cos, sin = rotary_emb(q_seg, position_ids)
+    cos, sin = rotary_emb(q_seg, position_ids)  # type: ignore[operator]
     return apply_multimodal_rotary_pos_emb(q_seg, k_seg, cos, sin)
 
 
