@@ -155,7 +155,7 @@ if __name__ == "__main__":
         paged = os.environ.get("VLLM_METAL_USE_PAGED_ATTENTION", "0") == "1"
         label = "PAGED" if paged else "MLX"
         print(f"Generating golden tokens ({label} path, {args.model})")
-        results = generate(args.model, args.max_tokens)
+        results = _run_in_subprocess(args.model, args.max_tokens, paged=paged)
         print_golden(results, label)
     else:
         ok = run_test(args.model, args.max_tokens)

@@ -555,6 +555,12 @@ void gdn_linear_attention_impl(
 
   int num_requests = static_cast<int>(cu_seqlens.shape(0)) - 1;
 
+  if (Dk > 256) {
+    throw std::runtime_error(
+        "GDN kernel supports Dk <= 256 (state[8] * 32 threads). "
+        "Got Dk=" + std::to_string(Dk));
+  }
+
   auto s = default_stream(Device::gpu);
   auto& d = metal::device(Device::gpu);
 

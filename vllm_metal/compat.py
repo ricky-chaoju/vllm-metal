@@ -34,20 +34,10 @@ def _patch_qwen35_rope_validation() -> None:
     Upstream: vllm-project/vllm#34604 fixed this but was reverted in #34610.
     Remove this patch when vllm-metal upgrades to a vLLM version with the fix.
     """
-    try:
-        from vllm.transformers_utils.configs.qwen3_5 import Qwen3_5TextConfig
-    except ImportError:
+    from importlib.util import find_spec
+
+    if find_spec("vllm.transformers_utils.configs.qwen3_5") is None:
         return
-
-    _orig_init = Qwen3_5TextConfig.__init__
-
-    # Use a wrapper that calls _orig_init then fixes the attribute.
-    # The trick: huggingface_hub's init_with_validate calls __init__
-    # first, THEN validate(). But vLLM 0.17.1's Qwen3_5TextConfig
-    # uses super().__init__(**kwargs) which triggers validate inside.
-    #
-    # So we need to fix kwargs BEFORE they reach super().__init__.
-    # The only way without exec: intercept at the PreTrainedConfig level.
 
     try:
         from transformers.modeling_rope_utils import RopeConfigBase
