@@ -90,20 +90,27 @@ class GDNPagedAttentionWrapper(nn.Module):
         a = inner.in_proj_a(x)  # [1, total_tokens, Hk]
 
         # === Step 2: Conv1d (per-request, needs conv_state) ===
+        # Use stable slot mapping for state pool access.
+        slot_ids = (
+            ctx.gdn_slot_mapping
+            if ctx.gdn_slot_mapping is not None
+            else list(range(num_requests))
+        )
         conv_outputs = []
         for req_idx in range(num_requests):
+            slot = slot_ids[req_idx]
             start = cu_seqlens[req_idx]
             end = cu_seqlens[req_idx + 1]
             req_qkv = mixed_qkv[:, start:end, :]
 
-            # Load conv state
-            conv_state = state_cache.conv_states[cache_idx][req_idx : req_idx + 1]
+            # Load conv state from stable slot
+            conv_state = state_cache.conv_states[cache_idx][slot : slot + 1]
             conv_input = mx.concatenate([conv_state, req_qkv], axis=1)
 
-            # Save updated conv state
+            # Save updated conv state back to stable slot
             new_conv = conv_input[:, -(inner.conv_kernel_size - 1) :]
             cs = state_cache.conv_states[cache_idx]
-            cs[req_idx : req_idx + 1] = new_conv
+            cs[slot : slot + 1] = new_conv
             state_cache.conv_states[cache_idx] = cs
 
             conv_out = nn.silu(inner.conv1d(conv_input))
@@ -152,8 +159,11 @@ class GDNPagedAttentionWrapper(nn.Module):
         beta_flat = mx.contiguous(beta.reshape(total_tokens, n_hv).astype(kernel_dtype))
 
         cu_seqlens_arr = mx.array(cu_seqlens, dtype=mx.int32)
-        # slot_mapping: request → slot in state pool (identity for now)
-        slot_mapping = mx.arange(num_requests, dtype=mx.int32)
+        # Stable request → slot mapping from model_runner's allocator.
+        if ctx.gdn_slot_mapping is not None:
+            slot_mapping = mx.array(ctx.gdn_slot_mapping, dtype=mx.int32)
+        else:
+            slot_mapping = mx.arange(num_requests, dtype=mx.int32)
 
         y_flat = mx.zeros((total_tokens, n_hv, d_v), dtype=kernel_dtype)
         recurrent_pool = state_cache.recurrent_states[cache_idx]

@@ -671,6 +671,11 @@ class MetalModelRunner:
         # Request state cache for incremental decoding
         self._request_states: dict[str, RequestState] = {}
 
+        # GDN slot allocator: stable request_id → slot mapping for hybrid
+        # models so recurrent state survives request reordering/preemption.
+        self._gdn_req_to_slot: dict[str, int] = {}
+        self._gdn_free_slots: list[int] = []
+
         # Pre-allocated buffer for decode input tokens
         self._max_batch_size = _MAX_BATCH_SIZE
 
@@ -1013,6 +1018,23 @@ class MetalModelRunner:
                 self.linear_num_k_heads * self.linear_key_head_dim * 2
                 + self.linear_num_v_heads * self.linear_value_head_dim
             )
+
+    def _gdn_alloc_slot(self, req_id: str) -> int:
+        """Allocate a stable GDN state pool slot for a request."""
+        if req_id in self._gdn_req_to_slot:
+            return self._gdn_req_to_slot[req_id]
+        if self._gdn_free_slots:
+            slot = self._gdn_free_slots.pop()
+        else:
+            slot = len(self._gdn_req_to_slot)
+        self._gdn_req_to_slot[req_id] = slot
+        return slot
+
+    def _gdn_free_slot(self, req_id: str) -> None:
+        """Release a GDN state pool slot when a request finishes."""
+        slot = self._gdn_req_to_slot.pop(req_id, None)
+        if slot is not None:
+            self._gdn_free_slots.append(slot)
 
     def _extract_logits(self, model_output: Any) -> mx.array:
         """Extract logits from model output.
@@ -1454,6 +1476,20 @@ class MetalModelRunner:
             prefill_info.append((pr.block_ids, len(pr.token_ids), pr.start_pos))
 
         prepare_unified(decode_info, prefill_info, self._paged_block_size)
+
+        # ---- GDN slot mapping (hybrid models) ----
+        if self.is_hybrid:
+            from vllm_metal.paged_attention_common import get_context
+
+            ctx = get_context()
+            if ctx is not None:
+                gdn_slots = []
+                # Decode requests come first, then prefill
+                for req_id, _ in decode_reqs:
+                    gdn_slots.append(self._gdn_alloc_slot(req_id))
+                for pr in prefill_reqs:
+                    gdn_slots.append(self._gdn_alloc_slot(pr.req_id))
+                ctx.gdn_slot_mapping = gdn_slots
 
         # ---- forward ----
         offset_caches = [OffsetCache(0) for _ in range(self.num_layers)]
@@ -1904,6 +1940,7 @@ class MetalModelRunner:
 
             # Block freeing is handled by the scheduler's kv_cache_manager.
             self._paged_request_seq_lens.pop(req_id, None)
+            self._gdn_free_slot(req_id)
 
         self._finished_request_count += len(finished_req_ids)
         if self._finished_request_count < _CACHE_CLEAR_INTERVAL:

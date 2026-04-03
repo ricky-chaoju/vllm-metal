@@ -143,13 +143,12 @@ class MetalWorker(WorkerBase):
         # Boundary ownership:
         # - Worker owns resource setup.
         # - Runner owns STT/runtime capability decisions.
-        use_paged = self.metal_config.use_paged_attention
         # Hybrid models (Qwen3.5 SDPA+GDN) require paged attention for
         # SDPA KV cache + GDN recurrent state management.
-        if not use_paged and self.model_runner.is_hybrid:
-            use_paged = True
+        if not self.metal_config.use_paged_attention and self.model_runner.is_hybrid:
+            self.metal_config.use_paged_attention = True
             logger.info("Auto-enabled paged attention for hybrid model")
-        if use_paged and self.model_runner.should_setup_paged_attention():
+        if self.metal_config.use_paged_attention and self.model_runner.should_setup_paged_attention():
             self._setup_paged_attention()
 
     @staticmethod
@@ -175,7 +174,9 @@ class MetalWorker(WorkerBase):
         max_model_len.
         """
         runner = self.model_runner
-        block_size = self.metal_config.block_size
+        # Use cache_config.block_size (not metal_config) because vLLM's
+        # hybrid alignment may have adjusted it to match mamba page size.
+        block_size = self.vllm_config.cache_config.block_size
 
         # --- Determine memory fraction ---
         if self.metal_config.is_auto_memory:
