@@ -170,21 +170,33 @@ class HybridPagedAttentionBackend:
 
             attn = getattr(layer, attn_attr)
 
-            if is_sdpa(attn):
+            if isinstance(attn, MetalKernelPagedAttentionWrapper):
+                # Already patched (cached model reuse) — refresh cache refs
+                object.__setattr__(attn, "_mk_kv_cache", kv_cache)
+                object.__setattr__(attn, "_mk_block_size", self._block_size)
+                cache_idx = sdpa_cache_map.get(layer_idx, layer_idx)
+                object.__setattr__(attn, "_mk_cache_idx", cache_idx)
+                patched += 1
+            elif isinstance(attn, GDNPagedAttentionWrapper):
+                # Already patched — refresh state cache ref
+                cache_idx = linear_cache_map.get(layer_idx, layer_idx)
+                object.__setattr__(attn, "_gdn_cache_idx", cache_idx)
+                object.__setattr__(attn, "_gdn_state_cache", self._state_cache)
+                patched += 1
+            elif is_sdpa(attn):
                 cache_idx = sdpa_cache_map.get(layer_idx, layer_idx)
                 wrapper = MetalKernelPagedAttentionWrapper(
                     attn, layer_idx, kv_cache, self._block_size, cache_idx=cache_idx
                 )
+                setattr(layer, attn_attr, wrapper)
+                patched += 1
             elif is_linear_attention(attn):
                 cache_idx = linear_cache_map.get(layer_idx, layer_idx)
                 wrapper = GDNPagedAttentionWrapper(
                     attn, layer_idx, cache_idx, self._state_cache
                 )
-            else:
-                continue
-
-            setattr(layer, attn_attr, wrapper)
-            patched += 1
+                setattr(layer, attn_attr, wrapper)
+                patched += 1
 
         return patched
 
