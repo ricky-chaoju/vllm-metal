@@ -45,6 +45,7 @@ class TestWorkerRunnerBoundaryDelegation:
         expect_cap_call: int,
     ) -> None:
         model_runner = MagicMock()
+        model_runner.is_hybrid = False
         model_runner.should_setup_paged_attention.return_value = runner_allows_setup
         worker = _make_worker(model_runner, use_paged_attention=use_paged_attention)
         worker._setup_paged_attention = MagicMock()

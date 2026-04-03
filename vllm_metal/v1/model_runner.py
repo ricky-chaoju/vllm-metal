@@ -924,8 +924,14 @@ class MetalModelRunner:
         # Merge nested text_config (Qwen3.5, VLMs) into top-level args.
         # setdefault preserves any top-level keys that already exist.
         tc = self.model_args.get("text_config")
-        if isinstance(tc, dict):
-            for k, v in tc.items():
+        if tc is not None:
+            if isinstance(tc, dict):
+                tc_dict = tc
+            elif hasattr(tc, "to_dict"):
+                tc_dict = tc.to_dict()
+            else:
+                tc_dict = vars(tc) if hasattr(tc, "__dict__") else {}
+            for k, v in tc_dict.items():
                 self.model_args.setdefault(k, v)
 
         if self.metal_config.debug:
@@ -1045,7 +1051,10 @@ class MetalModelRunner:
                 ),
             }
 
-        block_size = self.metal_config.block_size
+        # Use cache_config.block_size (not metal_config.block_size) because
+        # vLLM's hybrid alignment may have adjusted it to unify page sizes
+        # across SDPA and Mamba/GDN layers.
+        block_size = self.cache_config.block_size
         if self.kv_cache_dtype is None:
             raise RuntimeError("KV cache dtype not initialized; load_model() first")
 
@@ -1065,6 +1074,7 @@ class MetalModelRunner:
                     value_head_dim=self.linear_value_head_dim,
                     key_head_dim=self.linear_key_head_dim,
                     torch_dtype=torch_dtype,
+                    page_size_padded=self.cache_config.mamba_page_size_padded,
                 )
             else:
                 layer_name = f"layers.{layer_idx}.self_attn"
