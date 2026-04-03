@@ -151,3 +151,4 @@ Cargo.lock
 *.bin
 *.safetensors
 *.gguf
+tools/qwen35_benchmark.png
