@@ -1786,6 +1786,24 @@ class MetalModelRunner:
         new_reqs_by_id = {r.req_id: r for r in new_reqs}
         cached_reqs = scheduler_output.scheduled_cached_reqs
 
+        # === PP token sync: update non-last ranks with real sampled tokens ===
+        # Non-last PP ranks use dummy tokens during decode because they don't
+        # sample.  The scheduler sends the real sampled tokens back via
+        # CachedRequestData.new_token_ids (populated when use_pp=True).
+        if self._pp_size > 1 and not self._pp_is_last and cached_reqs:
+            for i, req_id in enumerate(cached_reqs.req_ids):
+                state = self._request_states.get(req_id)
+                if state is None:
+                    continue
+                new_tids = (
+                    cached_reqs.new_token_ids[i] if cached_reqs.new_token_ids else []
+                )
+                if new_tids:
+                    # Replace the dummy token(s) with real sampled token(s).
+                    n = min(len(new_tids), state.generated_tokens)
+                    if n > 0:
+                        state.token_ids[-n:] = new_tids[-n:]
+
         # Paged-attention entries collected for the single unified forward.
         # Each prefill entry: (output_idx, req_id, token_ids, sampling_params,
         #                      block_ids, generator, is_new, is_intermediate,
