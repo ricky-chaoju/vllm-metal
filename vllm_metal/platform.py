@@ -259,6 +259,18 @@ class MetalPlatform(Platform):
                     "Metal does not support tensor_parallel_size > 1. "
                     "Use pipeline_parallel_size for multi-node inference."
                 )
+            # SCAFFOLDING: remove when PP supports batched prefill+decode
+            # Non-last PP ranks can only send one request's hidden states
+            # per step.  Limit to 1 concurrent request to avoid shape
+            # mismatches when the scheduler mixes prefill and decode.
+            scheduler_config = vllm_config.scheduler_config
+            if getattr(scheduler_config, "max_num_seqs", None) is None or (
+                scheduler_config.max_num_seqs > 1
+            ):
+                scheduler_config.max_num_seqs = 1
+                logger.info(
+                    "PP: limiting max_num_seqs=1 (batched PP not yet supported)"
+                )
         elif parallel_config.distributed_executor_backend != "ray":
             parallel_config.distributed_executor_backend = "uni"
 
