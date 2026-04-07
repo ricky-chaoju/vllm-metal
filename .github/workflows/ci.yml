@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, ci/self-hosted-gpu-runner ]
   pull_request:
     branches: [ main ]
 
@@ -14,7 +14,7 @@ jobs:
     strategy:
       matrix:
         os: [macos-15, ubuntu-24.04-arm, ubuntu-24.04]
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -42,3 +42,22 @@ jobs:
     - name: Test
       run: |
         scripts/test.sh
+
+  test-gpu:
+    runs-on: [self-hosted, macOS, ARM64]
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: GPU smoke test
+      run: |
+        scripts/test.sh
+
+    - name: GPU model tests (slow)
+      run: |
+        scripts/test-gpu.sh
