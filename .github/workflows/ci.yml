@@ -58,10 +58,12 @@ jobs:
       env:
         HF_HOME: /tmp/hf_cache
       run: |
+        source "$HOME/.cargo/env" 2>/dev/null || true
         scripts/test.sh
 
     - name: GPU model tests (slow)
       env:
         HF_HOME: /tmp/hf_cache
       run: |
+        source "$HOME/.cargo/env" 2>/dev/null || true
         scripts/test-gpu.sh
