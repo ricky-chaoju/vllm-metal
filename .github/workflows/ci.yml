@@ -57,6 +57,7 @@ jobs:
     - name: GPU smoke test
       env:
         HF_HOME: /tmp/hf_cache
+        HUGGINGFACE_HUB_CACHE: /tmp/hf_cache/hub
       run: |
         source "$HOME/.cargo/env" 2>/dev/null || true
         scripts/test.sh
@@ -64,6 +65,7 @@ jobs:
     - name: GPU model tests (slow)
       env:
         HF_HOME: /tmp/hf_cache
+        HUGGINGFACE_HUB_CACHE: /tmp/hf_cache/hub
       run: |
         source "$HOME/.cargo/env" 2>/dev/null || true
         scripts/test-gpu.sh
