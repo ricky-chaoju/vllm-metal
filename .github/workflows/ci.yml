@@ -47,8 +47,6 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     permissions:
       contents: read
-    env:
-      HF_HOME: ${{ runner.temp }}/hf_cache
 
     steps:
     - name: Checkout code
@@ -57,9 +55,13 @@ jobs:
         submodules: recursive
 
     - name: GPU smoke test
+      env:
+        HF_HOME: /tmp/hf_cache
       run: |
         scripts/test.sh
 
     - name: GPU model tests (slow)
+      env:
+        HF_HOME: /tmp/hf_cache
       run: |
         scripts/test-gpu.sh
