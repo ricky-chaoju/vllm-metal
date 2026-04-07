@@ -47,6 +47,8 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     permissions:
       contents: read
+    env:
+      HF_HOME: ${{ runner.temp }}/hf_cache
 
     steps:
     - name: Checkout code
