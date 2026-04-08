@@ -90,6 +90,25 @@ _CACHE_CLEAR_INTERVAL = 50  # Clear cache every N finished requests
 # in the environment (any value; unset to disable).
 
 
+def _vlm_load_preserving_auto_processor(model_name: str) -> tuple:
+    """Load a VLM via mlx_vlm without contaminating AutoProcessor.
+
+    mlx_vlm monkey-patches ``transformers.AutoProcessor.from_pretrained``
+    to redirect to its own processor classes.  These lack methods that
+    vLLM's scheduler expects (e.g. ``_get_num_multimodal_tokens``),
+    causing startup failures.  We save and restore the original method
+    around the load call so the rest of the process stays unaffected.
+    """
+    from transformers import AutoProcessor
+
+    original = AutoProcessor.from_pretrained
+    try:
+        model, tokenizer = mlx_vlm_load(model_name)
+    finally:
+        AutoProcessor.from_pretrained = original
+    return model, tokenizer
+
+
 def _prefix_cache_enabled() -> bool:
     """Check whether prefix caching is enabled via environment variable."""
     return "VLLM_METAL_PREFIX_CACHE" in os.environ
@@ -824,7 +843,7 @@ class MetalModelRunner:
         # Load model using appropriate backend
         if is_vlm:
             logger.info("Using mlx-vlm for vision-language model")
-            self.model, self.tokenizer = mlx_vlm_load(model_name)
+            self.model, self.tokenizer = _vlm_load_preserving_auto_processor(model_name)
             self._is_vlm = True
         else:
             # Load model and tokenizer using mlx_lm for text-only models
