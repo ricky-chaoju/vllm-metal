@@ -42,6 +42,14 @@ class MetalKernelPagedAttentionWrapper(nn.Module):
     Uses ``object.__setattr__`` to bypass MLX nn.Module's ``__setattr__``.
 
     When no ``PagedAttentionContext`` is set, falls back to original attention.
+
+    Return contract:
+        - Standard models: returns ``mx.array`` (attention output).
+        - YOCO models (e.g. Gemma4): when ``shared_kv`` is in kwargs,
+          returns ``(output, kv_pair, offset)`` so the caller can forward
+          the K/V pair to the next same-type layer.  The return type is
+          selected by kwarg presence rather than a class flag because
+          mlx_lm's attention signature is fixed.
     """
 
     def __init__(

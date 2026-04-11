@@ -13,11 +13,12 @@ from typing import Any
 # Model loading
 # ---------------------------------------------------------------------------
 
-# Models that vLLM flags as multimodal but must be loaded via mlx_lm instead
-# of mlx_vlm.  Reasons are model-specific (see comment per entry).
+# Workaround: models that vLLM flags as multimodal but must be loaded
+# via mlx_lm instead of mlx_vlm.  Reasons are model-specific.
 #
-# - "gemma4": mlx_vlm's Gemma4 forward pass yields garbled text; mlx_lm loads
-#   the text backbone correctly.  Remove when mlx_vlm fixes this upstream.
+# - "gemma4": mlx_vlm's Gemma4 forward pass emits garbled output on the
+#   same checkpoint that mlx_lm decodes correctly.  This override can be
+#   removed once the mlx_vlm Gemma4 implementation matches mlx_lm's.
 _TEXT_BACKBONE_OVERRIDE_TYPES: frozenset[str] = frozenset({"gemma4"})
 
 
