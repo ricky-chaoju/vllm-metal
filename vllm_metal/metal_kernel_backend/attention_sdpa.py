@@ -165,15 +165,19 @@ def prepare_sdpa_qkv(
         if hasattr(inner, "q_norm"):
             queries = inner.q_norm(queries)
         queries = queries.transpose(0, 2, 1, 3)
-        if hasattr(inner, "rope") or hasattr(inner, "rotary_emb"):
-            queries, _ = apply_packed_rope(
-                inner,
-                queries,
-                keys,
-                ctx.cu_seqlens,
-                offsets=ctx.offsets if ctx.offsets else None,
-                apply_keys=False,
+        if not hasattr(inner, "rope") and not hasattr(inner, "rotary_emb"):
+            raise NotImplementedError(
+                f"Attention module {type(inner).__name__} does not have a "
+                "'rope' or 'rotary_emb' attribute."
             )
+        queries, _ = apply_packed_rope(
+            inner,
+            queries,
+            keys,
+            ctx.cu_seqlens,
+            offsets=ctx.offsets if ctx.offsets else None,
+            apply_keys=False,
+        )
     else:
         keys = inner.k_proj(x).reshape(B, L, n_kv_heads, -1)
         # K-eq-V variant (Gemma4 26B/31B): no v_proj, values = keys.
@@ -300,7 +304,7 @@ def sdpa_forward(
     kv_cache: MetalPagedKVCache,
     layer_idx: int,
     shared_kv: tuple[mx.array, mx.array] | None = None,
-) -> tuple[mx.array, tuple[mx.array, mx.array] | None]:
+) -> tuple[mx.array, tuple[mx.array, mx.array]]:
     """Full SDPA forward pass: project → norm → RoPE → Metal kernel.
 
     Handles MHA, GQA, and MQA uniformly — the head ratio between
