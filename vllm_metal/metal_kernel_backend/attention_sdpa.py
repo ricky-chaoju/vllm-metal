@@ -6,12 +6,21 @@ between ``n_heads`` (queries) and ``n_kv_heads`` (keys/values) is handled
 transparently by the Metal paged attention kernel.
 
 Handles models whose attention module exposes:
-- ``q_proj``, ``k_proj``, ``v_proj``, ``o_proj`` linear projections
-- ``rope`` for rotary position embeddings
+- ``q_proj``, ``k_proj``, ``o_proj`` linear projections (``v_proj`` optional —
+  see K-eq-V variant below)
+- ``rope`` or ``rotary_emb`` for rotary position embeddings
 - ``n_heads``, ``n_kv_heads`` head counts
-- Optionally ``q_norm``, ``k_norm`` (Qwen3 per-head RMSNorm before RoPE)
+- Optionally ``q_norm``, ``k_norm``, ``v_norm`` per-head RMSNorms
 
-Covers: Qwen3, Llama, Mistral, and other standard transformer architectures.
+Gemma4 variants (see :func:`prepare_sdpa_qkv`):
+- **YOCO**: later layers reuse K/V from a reference layer via ``shared_kv``.
+- **K-eq-V**: 26B/31B drop ``v_proj`` and reuse ``keys`` as ``values``.
+- **Variable head_dim**: sliding vs. full-attention layers use different
+  head_dim; Q/K/V are zero-padded up to the cache's allocated head_dim
+  via :func:`pad_qkv_to_cache_head_dim`.
+
+Covers: Qwen3, Qwen3.5, Llama, Mistral, Gemma, Gemma4, and other
+RoPE-based transformer architectures.
 
 All operations use MLX arrays end-to-end — no PyTorch MPS bridge.
 """
@@ -243,8 +252,16 @@ def pad_qkv_to_cache_head_dim(
         Padded ``(queries, keys, values)``.
 
     Raises:
-        ValueError: If ``head_dim > cache_head_dim`` (unsupported).
+        ValueError: If ``head_dim > cache_head_dim`` (unsupported), or if
+            ``queries`` / ``keys`` / ``values`` do not share the same last
+            dimension (caller invariant).
     """
+    if not (queries.shape[-1] == keys.shape[-1] == values.shape[-1] == head_dim):
+        raise ValueError(
+            "Q/K/V last-dim mismatch: "
+            f"q={queries.shape[-1]}, k={keys.shape[-1]}, "
+            f"v={values.shape[-1]}, head_dim={head_dim}"
+        )
     if head_dim == cache_head_dim:
         return queries, keys, values
     if head_dim > cache_head_dim:
@@ -318,8 +335,8 @@ def sdpa_forward(
     B, L, _ = x.shape  # noqa: N806
 
     # Resolve head counts — mlx_lm uses different attribute names:
-    #   Qwen3/Llama/Gemma: n_heads, n_kv_heads
-    #   Qwen3.5 (Qwen3Next): num_attention_heads, num_key_value_heads
+    #   Qwen3/Llama/Gemma/Gemma4: n_heads, n_kv_heads
+    #   Qwen3.5 (Qwen3Next):      num_attention_heads, num_key_value_heads
     n_heads = getattr(inner, "n_heads", None) or inner.num_attention_heads
     n_kv_heads = getattr(inner, "n_kv_heads", None) or inner.num_key_value_heads
 

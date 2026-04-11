@@ -67,11 +67,13 @@ def apply_packed_rope(
         q_seg = queries[:, :, start:end, :]
 
         if rope_fn is not None:
+            # mlx_lm API: rope(x, offset=off) → rotated_x
             q_parts.append(rope_fn(q_seg, offset=off))
             if apply_keys:
                 k_seg = keys[:, :, start:end, :]
                 k_parts.append(rope_fn(k_seg, offset=off))
         else:
+            # mlx_vlm M-RoPE API: rotary_emb(x, position_ids) → (cos, sin)
             k_seg = keys[:, :, start:end, :]
             q_rot, k_rot = _apply_mrope_segment(rotary_emb, q_seg, k_seg, off)
             q_parts.append(q_rot)

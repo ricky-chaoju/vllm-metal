@@ -160,6 +160,16 @@ class TestPadQKVToCacheHeadDim:
         with pytest.raises(ValueError, match="exceeds cache_head_dim"):
             pad_qkv_to_cache_head_dim(q, q, q, _CACHE_HEAD_DIM, _HEAD_DIM)
 
+    def test_rejects_mismatched_qkv_last_dim(self) -> None:
+        # Arrange — caller passes Q at one head_dim but K/V at another
+        q = mx.ones((_BATCH, _N_HEADS, _SEQ_LEN, _HEAD_DIM))
+        k = mx.ones((_BATCH, _N_HEADS, _SEQ_LEN, _CACHE_HEAD_DIM))
+        v = mx.ones((_BATCH, _N_HEADS, _SEQ_LEN, _CACHE_HEAD_DIM))
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="last-dim mismatch"):
+            pad_qkv_to_cache_head_dim(q, k, v, _HEAD_DIM, _CACHE_HEAD_DIM)
+
 
 # === truncate_padded_output ===
 
@@ -286,3 +296,24 @@ class TestPrepareSDPAQKV:
         assert keys is shared_k
         assert values is shared_v
         assert kv_for_sharing == (shared_k, shared_v)
+
+    def test_yoco_requires_rope_attribute(self) -> None:
+        # Arrange — YOCO path must still reject non-RoPE models; without a
+        # guard we would silently return un-rotated queries.
+        inner = _make_inner(with_v_proj=True)
+        del inner.rope
+        ctx = _make_ctx(_SEQ_LEN)
+        x = mx.ones((_BATCH, _SEQ_LEN, _HIDDEN))
+        shared_k = mx.full((_BATCH, _N_KV_HEADS, _SEQ_LEN, _HEAD_DIM), 1.0)
+        shared_v = mx.full((_BATCH, _N_KV_HEADS, _SEQ_LEN, _HEAD_DIM), 1.0)
+
+        # Act / Assert
+        with pytest.raises(NotImplementedError, match="rope"):
+            prepare_sdpa_qkv(
+                inner,
+                x,
+                ctx,
+                _N_HEADS,
+                _N_KV_HEADS,
+                shared_kv=(shared_k, shared_v),
+            )
