@@ -71,18 +71,39 @@ class MetalKernelPagedAttentionWrapper(nn.Module):
         cache: nn.Module | None = None,
         position_ids: mx.array | None = None,
         **kwargs: Any,
-    ) -> mx.array:
+    ) -> Any:
         ctx = get_context()
         if ctx is None:
-            # No paged context → delegate to original attention
-            return self._inner(
-                x, mask=mask, cache=cache, position_ids=position_ids, **kwargs
-            )
+            # No paged context → delegate to original attention.
+            # Only pass position_ids when provided (mlx_vlm models);
+            # mlx_lm models (e.g. Gemma4) use offset via **kwargs instead.
+            if position_ids is not None:
+                return self._inner(
+                    x, mask=mask, cache=cache, position_ids=position_ids, **kwargs
+                )
+            return self._inner(x, mask=mask, cache=cache, **kwargs)
 
         inner = self._inner
 
-        # SDPA attention via Metal kernel
-        return sdpa_forward(inner, x, ctx, self._mk_kv_cache, self._mk_cache_idx)
+        # SDPA attention via Metal kernel.
+        # Pass shared_kv for YOCO KV sharing (Gemma4: later layers reuse
+        # K/V from earlier same-type layers instead of projecting their own).
+        shared_kv = kwargs.get("shared_kv")
+        output, kv_pair = sdpa_forward(
+            inner,
+            x,
+            ctx,
+            self._mk_kv_cache,
+            self._mk_cache_idx,
+            shared_kv=shared_kv,
+        )
+
+        # YOCO models (Gemma4) expect (output, shared_kv, offset) return.
+        # Key off shared_kv presence — it's the definitive YOCO indicator.
+        if "shared_kv" in kwargs:
+            return (output, kv_pair, kwargs.get("offset", 0))
+
+        return output
 
 
 # ---------------------------------------------------------------------------
