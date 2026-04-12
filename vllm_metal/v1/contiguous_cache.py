@@ -9,7 +9,6 @@ in contrast to the fixed-block layout used by paged attention.
 
 import hashlib
 import math
-import os
 from array import array
 from dataclasses import dataclass
 from typing import Any, TypeAlias
@@ -25,7 +24,11 @@ from mlx_lm.models.cache import (
 )
 from vllm.logger import init_logger
 
+import vllm_metal.envs as envs
+from vllm_metal.v1.vlm_utils import _vlm_text_model
+
 logger = init_logger(__name__)
+
 
 # Minimum requests to use BatchKVCache for batched decode
 _MIN_BATCH_SIZE_FOR_BATCHING = 2
@@ -46,7 +49,7 @@ AnyCache: TypeAlias = KVCache | RotatingKVCache | ArraysCache
 
 def _prefix_cache_enabled() -> bool:
     """Check whether prefix caching is enabled via environment variable."""
-    return "VLLM_METAL_PREFIX_CACHE" in os.environ
+    return envs.VLLM_METAL_PREFIX_CACHE
 
 
 _PREFIX_CACHE_ENABLED = _prefix_cache_enabled()
@@ -55,7 +58,7 @@ _PREFIX_CACHE_DEFAULT_FRACTION = 0.05  # 5% of MLX working set
 
 def _get_prefix_cache_max_bytes() -> int:
     """Get prefix cache memory limit based on MLX recommended working set."""
-    fraction_str = os.environ.get("VLLM_METAL_PREFIX_CACHE_FRACTION", "")
+    fraction_str = envs.VLLM_METAL_PREFIX_CACHE_FRACTION
     if fraction_str:
         try:
             fraction = float(fraction_str)
@@ -222,11 +225,7 @@ class PrefixCacheManager:
         Only KVCache layers are restored. RotatingKVCache / ArraysCache layers
         remain in their fresh state.
         """
-        cache_model = (
-            model.language_model
-            if is_vlm and hasattr(model, "language_model")
-            else model
-        )
+        cache_model = _vlm_text_model(model) if is_vlm else model
         cache = make_prompt_cache(cache_model)
         for i, layer_cache in enumerate(cache):
             if i < len(cached.cache_state) and cached.cache_state[i] is not None:
