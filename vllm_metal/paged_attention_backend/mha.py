@@ -36,8 +36,12 @@ def warm_up_paged_cache(cache: MetalPagedKVCache) -> None:
         ) from e
 
     try:
-        dummy_k = mx.zeros((1, cache.num_kv_heads, cache.head_dim), dtype=cache.dtype)
-        dummy_v = mx.zeros((1, cache.num_kv_heads, cache.head_dim), dtype=cache.dtype)
+        # Warm up against the concrete layer-0 cache shape. Per-layer cache
+        # allocation may differ from the scalar constructor fallback.
+        warmup_kv_heads = cache.kv_heads_per_layer[0]
+        warmup_head_dim = cache.head_dim_per_layer[0]
+        dummy_k = mx.zeros((1, warmup_kv_heads, warmup_head_dim), dtype=cache.dtype)
+        dummy_v = mx.zeros((1, warmup_kv_heads, warmup_head_dim), dtype=cache.dtype)
         dummy_slot = mx.zeros((1,), dtype=mx.int64)
         mx.eval(dummy_k, dummy_v, dummy_slot)
         ops.reshape_and_cache(
@@ -70,6 +74,8 @@ class MHAPagedAttentionBackend:
         block_size: int,
         dtype: mx.Dtype,
         cache_idx_map: dict[int, int] | None = None,
+        kv_heads_per_layer: list[int] | None = None,
+        head_dim_per_layer: list[int] | None = None,
     ) -> None:
         self._num_layers = num_layers
         self._num_kv_heads = num_kv_heads
@@ -78,6 +84,8 @@ class MHAPagedAttentionBackend:
         self._dtype = dtype
         self._cache: MetalPagedKVCache | None = None
         self._cache_idx_map = cache_idx_map
+        self._kv_heads_per_layer = kv_heads_per_layer
+        self._head_dim_per_layer = head_dim_per_layer
 
     def _require_initialized(self, caller: str) -> MetalPagedKVCache:
         if self._cache is None:
@@ -94,6 +102,8 @@ class MHAPagedAttentionBackend:
             num_blocks=num_blocks,
             block_size=self._block_size,
             dtype=self._dtype,
+            kv_heads_per_layer=self._kv_heads_per_layer,
+            head_dim_per_layer=self._head_dim_per_layer,
         )
 
     def patch_model(self, model: Any) -> int:
