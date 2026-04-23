@@ -18,15 +18,9 @@
 
 ## Multimodal Serve Modes
 
-- `auto`: use native multimodal loading by default, but fall back to the
-  text-only compatibility path for known-incompatible checkpoints such as
-  Gemma4 and Qwen3.5/Qwen3.6 FP8 conditional-generation wrappers.
-- `text-only-compat`: force multimodal models onto the text-only path. This is
-  useful when a checkpoint should still serve text generations but native
-  multimodal loading is not ready.
-- `multimodal-native`: disable the compatibility fallback and keep the native
-  multimodal path active. Use this when validating or developing real
-  multimodal support.
+- `auto`: use native multimodal loading by default, but fall back to the text-only compatibility path for known-incompatible checkpoints such as Gemma4 and Qwen3.5/Qwen3.6 FP8 conditional-generation wrappers.
+- `text-only-compat`: force multimodal models onto the text-only path when a checkpoint should still serve text generations but native multimodal loading is not ready.
+- `multimodal-native`: disable the compatibility fallback and keep the native multimodal path active when validating or developing real multimodal support.
 
 ## Paged KV vs MLX KV Memory Settings
 
@@ -36,7 +30,7 @@
 
 | `VLLM_METAL_MEMORY_FRACTION` | `VLLM_METAL_USE_PAGED_ATTENTION` | Valid? | Notes |
 |--|--|--|--|
-| `auto` | `0` | Yes | MLX path (default) |
-| `auto` | `1` | Yes | Paged KV path; defaults to 0.9 internally |
+| `auto` | `0` | Yes | MLX path |
+| `auto` | `1` | Yes | Paged KV path (default); defaults to 0.9 internally |
 | `0.7` | `1` | Yes | Paged KV path with explicit memory budget |
 | `0.7` | `0` | No | Explicit fraction without paged KV is invalid |
