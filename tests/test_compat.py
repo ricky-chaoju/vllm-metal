@@ -79,9 +79,7 @@ class TestQwen35Fp8CompatPatch:
         assert "language_model.layers.0.linear.weight_scale_inv" not in sanitized
         assert sanitized["language_model.layers.0.linear.weight"].shape == (128, 128)
 
-    def test_patches_higher_rank_weights_for_moe(
-        self, monkeypatch
-    ) -> None:
+    def test_patches_higher_rank_weights_for_moe(self, monkeypatch) -> None:
         _, moe_module = _install_fake_qwen35_modules(monkeypatch, include_moe=True)
         gate_up_proj_prefix = "language_model.layers.0.mlp.experts.gate_up_proj"
 
