@@ -83,33 +83,18 @@ class TestQwen35Fp8CompatPatch:
         self, monkeypatch
     ) -> None:
         _, moe_module = _install_fake_qwen35_modules(monkeypatch, include_moe=True)
+        gate_up_proj_prefix = "language_model.layers.0.mlp.experts.gate_up_proj"
 
         compat._patch_mlx_lm_qwen35_fp8_sanitize()
 
         sanitized = moe_module.Model().sanitize(
             {
-                "language_model.layers.0.mlp.experts.gate_up_proj.weight": np.ones(
-                    (2, 256, 128)
-                ),
-                "language_model.layers.0.mlp.experts.gate_up_proj.weight_scale_inv": np.ones(
-                    (2, 2, 1)
-                ),
-                "language_model.layers.0.mlp.experts.gate_up_proj.activation_scale": np.ones(
-                    (2, 2, 1)
-                ),
+                f"{gate_up_proj_prefix}.weight": np.ones((2, 256, 128)),
+                f"{gate_up_proj_prefix}.weight_scale_inv": np.ones((2, 2, 1)),
+                f"{gate_up_proj_prefix}.activation_scale": np.ones((2, 2, 1)),
             }
         )
 
-        assert (
-            "language_model.layers.0.mlp.experts.gate_up_proj.weight_scale_inv"
-            not in sanitized
-        )
-        assert (
-            "language_model.layers.0.mlp.experts.gate_up_proj.activation_scale"
-            not in sanitized
-        )
-        assert sanitized["language_model.layers.0.mlp.experts.gate_up_proj.weight"].shape == (
-            2,
-            256,
-            128,
-        )
+        assert f"{gate_up_proj_prefix}.weight_scale_inv" not in sanitized
+        assert f"{gate_up_proj_prefix}.activation_scale" not in sanitized
+        assert sanitized[f"{gate_up_proj_prefix}.weight"].shape == (2, 256, 128)

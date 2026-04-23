@@ -150,7 +150,9 @@ class TestModelLifecycle:
             assert compat_path != model_dir
             assert (compat_path / "config.json").is_symlink()
             assert (compat_path / "tokenizer.json").is_symlink()
-            compat_shards = sorted(p.name for p in compat_path.glob("model*.safetensors"))
+            compat_shards = sorted(
+                p.name for p in compat_path.glob("model*.safetensors")
+            )
             assert compat_shards == [
                 "model-00001-of-00003.safetensors",
                 "model-00002-of-00003.safetensors",
