@@ -21,6 +21,7 @@ def apply_compat_patches() -> None:
         return
     _APPLIED = True
     _patch_qwen35_rope_validation()
+    _patch_mlx_lm_qwen35_fp8_sanitize()
 
 
 def _patch_qwen35_rope_validation() -> None:
@@ -99,3 +100,102 @@ def _patch_qwen35_rope_validation() -> None:
             )
     except (ImportError, AttributeError):
         pass
+
+
+def _patch_mlx_lm_qwen35_fp8_sanitize() -> None:
+    """Teach mlx_lm's Qwen3.5 loaders to consume local FP8 ``weight_scale_inv``.
+
+    Some Qwen3.5/Qwen3.6 local checkpoints store FP8 weights plus
+    ``*_weight_scale_inv`` tensors in HuggingFace-style shards. The installed
+    mlx_lm ``qwen3_5`` loaders do not currently dequantize those tensors during
+    ``sanitize()``, so ``model.load_weights()`` aborts with hundreds of
+    unexpected ``weight_scale_inv`` parameters.
+
+    Patch the top-level model ``sanitize()`` methods to dequantize those FP8
+    tensors before the upstream remapping logic runs. This keeps the workaround
+    narrow to the affected architectures and leaves upstream control flow intact.
+    """
+    from importlib import import_module
+    from importlib.util import find_spec
+
+    try:
+        import mlx.core as mx
+    except Exception:
+        return
+
+    model_modules = []
+    for module_name in ("mlx_lm.models.qwen3_5", "mlx_lm.models.qwen3_5_moe"):
+        if find_spec(module_name) is None:
+            continue
+        try:
+            model_modules.append(import_module(module_name))
+        except Exception:
+            continue
+    if not model_modules:
+        return
+
+    def _dequantize_qwen35_fp8_weights(weights):
+        if not any("weight_scale_inv" in key for key in weights):
+            return weights
+
+        def _dequant(weight, scale_inv):
+            block_size = 128
+            weight = mx.from_fp8(weight, dtype=mx.bfloat16)
+            if weight.ndim < 2:
+                return weight.astype(mx.bfloat16)
+
+            leading_shape = weight.shape[:-2]
+            rows, cols = weight.shape[-2:]
+            pad_rows = (-rows) % block_size
+            pad_cols = (-cols) % block_size
+            pad_width = [(0, 0)] * len(leading_shape)
+            pad_width.extend(((0, pad_rows), (0, pad_cols)))
+            weight = mx.pad(weight, pad_width)
+            block_rows = (rows + pad_rows) // block_size
+            block_cols = (cols + pad_cols) // block_size
+            weight = weight.reshape(
+                (*leading_shape, block_rows, block_size, block_cols, block_size)
+            )
+            weight = (weight * scale_inv[..., :, None, :, None]).reshape(
+                *leading_shape,
+                rows + pad_rows,
+                cols + pad_cols,
+            )
+            return weight[..., :rows, :cols].astype(mx.bfloat16)
+
+        new_weights = {}
+        for key, value in weights.items():
+            if "weight_scale_inv" in key:
+                weight_key = key.replace("_scale_inv", "")
+                weight = weights[weight_key]
+                new_weights[weight_key] = _dequant(weight, value)
+            elif "activation_scale" in key:
+                continue
+            elif key not in new_weights:
+                new_weights[key] = value
+        return new_weights
+
+    def _patch_model_sanitize(model_cls) -> bool:
+        sanitize = getattr(model_cls, "sanitize", None)
+        if sanitize is None or getattr(sanitize, "_vllm_metal_qwen35_fp8_patch", False):
+            return False
+
+        original_sanitize = sanitize
+
+        def _patched_sanitize(self, weights):
+            return original_sanitize(self, _dequantize_qwen35_fp8_weights(weights))
+
+        _patched_sanitize._vllm_metal_qwen35_fp8_patch = True
+        model_cls.sanitize = _patched_sanitize
+        return True
+
+    patched_modules = []
+    for module in model_modules:
+        model_cls = getattr(module, "Model", None)
+        if model_cls is not None and _patch_model_sanitize(model_cls):
+            patched_modules.append(module.__name__.rsplit(".", maxsplit=1)[-1])
+    if patched_modules:
+        logger.debug(
+            "Patched mlx_lm %s FP8 sanitize compatibility",
+            ", ".join(sorted(patched_modules)),
+        )
