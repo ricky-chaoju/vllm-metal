@@ -265,6 +265,7 @@ def prepare_sdpa_qkv(
             ctx.cu_seqlens,
             offsets=ctx.offsets if ctx.offsets else None,
             apply_keys=False,
+            positions=ctx.segment_positions,
         )
     else:
         if not packed_qkv:
@@ -299,6 +300,7 @@ def prepare_sdpa_qkv(
             keys,
             ctx.cu_seqlens,
             offsets=ctx.offsets if ctx.offsets else None,
+            positions=ctx.segment_positions,
         )
 
     kv_for_sharing = (keys, values)
