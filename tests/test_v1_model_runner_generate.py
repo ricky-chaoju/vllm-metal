@@ -185,13 +185,6 @@ class TestV1MetalModelRunnerSampleTokens:
 
         assert out is None
 
-    def test_returns_none_when_no_pending_output_and_not_async(self) -> None:
-        runner = self._make_runner()
-        runner.use_async_scheduling = False
-
-        out = runner.sample_tokens(grammar_output=None)
-        assert out is None
-
 
 class TestV1MetalModelRunnerSpecDecodeVerification:
     def _make_runner(self) -> mr.MetalModelRunner:

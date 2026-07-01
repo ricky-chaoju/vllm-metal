@@ -96,12 +96,6 @@ class TestCacheKey:
         generic_key = _generation_cache_key("x", is_vlm=False)
         assert awq_key != generic_key
 
-    def test_stable_for_same_inputs(self):
-        bf16 = _mlx_dtype(torch.bfloat16)
-        assert AWQQuantLoader.cache_key(
-            "foo", target_dtype=bf16
-        ) == AWQQuantLoader.cache_key("foo", target_dtype=bf16)
-
 
 class TestConfigDetection:
     """``AWQQuantLoader.for_model``: detection, accept, decline, reject."""

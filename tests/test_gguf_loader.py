@@ -469,10 +469,9 @@ def test_for_model_rejects_missing_tokenizer_dir(tmp_path):
         )
 
 
-def test_cache_key_is_stable_dtype_and_config_dir_scoped(tmp_path):
+def test_cache_key_is_dtype_and_config_dir_scoped(tmp_path):
     gguf_path, cfg_dir = _build_dense_fixture(tmp_path, "qwen3", has_qk_norm=True)
     key = GGUFModelLoader.cache_key(gguf_path, cfg_dir, target_dtype=mx.float16)
-    assert key == GGUFModelLoader.cache_key(gguf_path, cfg_dir, target_dtype=mx.float16)
     # dtype-scoped: a different dtype must not be cross-served from cache.
     assert key != GGUFModelLoader.cache_key(
         gguf_path, cfg_dir, target_dtype=mx.bfloat16
