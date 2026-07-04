@@ -1,0 +1,34 @@
+# Fork-only diagnostic: sample Metal GPU availability across GitHub's macOS
+# runner pools (see vllm-project/vllm-metal#471 — hosts stopped handing the
+# paravirtual GPU to torch-loaded processes on 2026-07-03). Delete after use.
+name: Metal probe
+on:
+  push:
+    branches: [probe/metal-runner-pools]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Host info
+        run: |
+          sw_vers
+          uname -m
+          echo "ImageOS=${ImageOS:-?} ImageVersion=${ImageVersion:-?}"
+          system_profiler SPDisplaysDataType 2>/dev/null | head -20 || true
+      - name: Install probes
+        run: |
+          python3 -m pip install --quiet --break-system-packages mlx torch \
+            || python3 -m pip install --quiet mlx torch
+      - name: Bare MLX probe
+        run: |
+          python3 -c "import mlx.core as mx; print('bare mx.metal.is_available:', mx.metal.is_available())"
+      - name: Torch-loaded probe (replicates vLLM import order)
+        run: |
+          python3 -c "import torch, mlx.core as mx; print('after torch, mx.metal.is_available:', mx.metal.is_available())"
