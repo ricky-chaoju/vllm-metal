@@ -2,7 +2,7 @@
 # proven as the Metal-breakage culprit by A/B on the same runner
 # (5.13.0 -> CpuPlatform, 5.12.1 -> MetalPlatform). This verifies the fix:
 # full CI pipeline on the pinned branch must go REAL green (Metal smokes +
-# pytest, not a gate skip). Delete after use.
+# pytest, not a gate skip) — now on macos-26, the target CI pool. Delete after use.
 name: Metal probe
 on:
   push:
@@ -11,7 +11,7 @@ on:
 
 jobs:
   pinned-full-pipeline:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     steps:
       - name: Checkout pinned branch
