@@ -1,5 +1,16 @@
 #!/bin/bash
 
+# Skip the Metal-dependent CI phases on a runner VM whose paravirtual GPU is
+# missing or half-broken, with a visible annotation. Exits 0.
+skip_no_metal() {
+  local msg="$1"
+  echo "::warning title=No Metal GPU on this runner::${msg}"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    echo "**Skipped Metal phases:** ${msg}" >> "$GITHUB_STEP_SUMMARY"
+  fi
+  exit 0
+}
+
 # Run a paged-attention smoke test: serve a model, check golden output.
 #
 # Usage: run_smoke_test <model> <revision> <prompt> <expected> [extra_serve_args...]
@@ -19,11 +30,16 @@ run_smoke_test() {
 
   section "Smoke test: $model"
 
-  # 1. Start vLLM with paged attention
+  # 1. Start vLLM with paged attention. Output is teed to a log so the
+  # health-check failure path below can tell a real crash apart from the
+  # paravirtual GPU vanishing for the serve processes (see the Metal gate
+  # in main()).
+  local serve_log
+  serve_log="$(mktemp -t vllm_smoke)"
   GLOO_SOCKET_IFNAME=lo0 \
     VLLM_METAL_USE_PAGED_ATTENTION=1 \
     VLLM_METAL_MEMORY_FRACTION=0.8 \
-    vllm serve "$model" --revision "$revision" --max-model-len 512 --max-num-batched-tokens 64 ${extra_args[@]+"${extra_args[@]}"} &
+    vllm serve "$model" --revision "$revision" --max-model-len 512 --max-num-batched-tokens 64 ${extra_args[@]+"${extra_args[@]}"} > >(tee "$serve_log") 2>&1 &
 
   local vllm_pid=$!
 
@@ -32,7 +48,10 @@ run_smoke_test() {
   local health_url="http://localhost:8000/health"
   if ! curl --retry 30 --retry-delay 10 --retry-all-errors -s "$health_url" > /dev/null; then
     echo "vLLM failed to start."
-    kill $vllm_pid
+    kill $vllm_pid 2>/dev/null
+    if ! grep -q "Platform plugin metal is activated" "$serve_log"; then
+      skip_no_metal "vllm serve resolved to vLLM's stock CPU platform: the runner VM's paravirtual GPU was not usable inside the serve processes even though the pre-flight probe passed. The Metal smokes cannot run there. Re-run the job to land a healthy host."
+    fi
     exit 1
   fi
 
@@ -173,6 +192,21 @@ main() {
 
     section "Verifying package import"
     python -c "import vllm_metal; print('vllm_metal imported successfully')"
+
+    # GitHub macOS VMs get their paravirtual GPU non-deterministically, and on
+    # a bad host the breakage is per-process, not per-boot: in CI run
+    # 28697082487 a bare "import mlx.core" probe saw Metal while, 30 seconds
+    # later, all three torch-loaded vllm serve processes resolved to vLLM's
+    # stock CPU platform (no "Platform plugin metal is activated" line) and
+    # died on its CPU-worker checks. So probe through vLLM's own platform
+    # resolution (same import chain as the serve processes), and let
+    # run_smoke_test double-check the serve log for the activation marker.
+    # SCAFFOLDING: remove when CI runs on Metal-guaranteed runners.
+    section "Checking Metal platform resolution"
+    if ! python -c "import sys; from vllm.platforms import current_platform; sys.exit(0 if type(current_platform).__name__ == 'MetalPlatform' else 1)"; then
+      skip_no_metal "vLLM resolved to its stock CPU platform on this runner VM (the paravirtual GPU is missing or unusable), so the Metal smokes and pytest cannot run. Install and import checks passed. Re-run the job to land a Metal-capable host."
+    fi
+    echo "Metal platform resolved."
 
     smoke_tests
     section "Running tests"
