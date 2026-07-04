@@ -1,8 +1,8 @@
 # Fork-only diagnostic (see vllm-project/vllm-metal#471): transformers 5.13.0
-# (released 2026-07-03T16:05Z, exactly between the last green CI run 13:42 and
-# the first red 18:47) is the prime suspect for breaking MLX Metal
-# availability inside torch-loaded processes on runner VMs. Verify causally.
-# Delete after use.
+# proven as the Metal-breakage culprit by A/B on the same runner
+# (5.13.0 -> CpuPlatform, 5.12.1 -> MetalPlatform). This verifies the fix:
+# full CI pipeline on the pinned branch must go REAL green (Metal smokes +
+# pytest, not a gate skip). Delete after use.
 name: Metal probe
 on:
   push:
@@ -10,51 +10,20 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Minimal repro attempt: does merely importing transformers 5.13.0 break
-  # mx.metal.is_available() on the runner's paravirtual GPU?
-  minimal-culprit:
+  pinned-full-pipeline:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
-      - name: Install mlx + torch + suspect transformers
-        run: |
-          python3 -m pip install --quiet --break-system-packages mlx torch transformers==5.13.0 \
-            || python3 -m pip install --quiet mlx torch transformers==5.13.0
-      - name: Probe with transformers 5.13.0
-        run: |
-          python3 -c "import mlx.core as mx; print('bare:', mx.metal.is_available())"
-          python3 -c "import torch, mlx.core as mx; print('after torch:', mx.metal.is_available())"
-          python3 -c "import transformers, mlx.core as mx; print('after transformers 5.13.0:', mx.metal.is_available())"
-          python3 -c "import torch, transformers, mlx.core as mx; print('after torch+transformers 5.13.0:', mx.metal.is_available())"
-      - name: Downgrade to 5.12.1 and re-probe
-        run: |
-          python3 -m pip install --quiet --break-system-packages transformers==5.12.1 \
-            || python3 -m pip install --quiet transformers==5.12.1
-          python3 -c "import torch, transformers, mlx.core as mx; print('after torch+transformers 5.12.1:', mx.metal.is_available())"
-
-  # Full-stack proof: same venv the real CI builds; platform resolution with
-  # shipped deps (expect CPU), then after downgrading only transformers
-  # (expect MetalPlatform).
-  fullstack-culprit:
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
+      - name: Checkout pinned branch
         uses: actions/checkout@v4
         with:
-          ref: fix/ci-cpu-memory-check
+          ref: fix/ci-transformers-pin
           submodules: recursive
-      - name: Install full stack
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-${{ runner.os }}-${{ hashFiles('scripts/test.sh') }}
+      - name: Test (must run REAL Metal smokes, not the gate skip)
         run: |
-          source scripts/lib.sh
-          setup_dev_env
-          ensure_metal_toolchain
-          build_native_artifacts
-          ./install.sh
-      - name: Probe with shipped deps, then downgrade transformers only
-        run: |
-          source .venv-vllm-metal/bin/activate
-          python -c "import transformers; print('shipped transformers:', transformers.__version__)"
-          python -c "from vllm.platforms import current_platform; print('resolution with shipped deps:', type(current_platform).__name__)" || true
-          uv pip install --quiet transformers==5.12.1
-          python -c "from vllm.platforms import current_platform; print('resolution with transformers 5.12.1:', type(current_platform).__name__)"
+          scripts/test.sh
