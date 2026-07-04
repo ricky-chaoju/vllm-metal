@@ -1,6 +1,7 @@
-# Fork-only diagnostic: sample Metal GPU availability across GitHub's macOS
-# runner pools (see vllm-project/vllm-metal#471 — hosts stopped handing the
-# paravirtual GPU to torch-loaded processes on 2026-07-03). Delete after use.
+# Fork-only diagnostic (see vllm-project/vllm-metal#471): sample Metal GPU
+# availability across GitHub's macOS runner pools, and verify the FULL CI
+# pipeline (install + Metal gate + smokes + pytest) on candidate pools.
+# Delete after use.
 name: Metal probe
 on:
   push:
@@ -21,7 +22,6 @@ jobs:
           sw_vers
           uname -m
           echo "ImageOS=${ImageOS:-?} ImageVersion=${ImageVersion:-?}"
-          system_profiler SPDisplaysDataType 2>/dev/null | head -20 || true
       - name: Install probes
         run: |
           python3 -m pip install --quiet --break-system-packages mlx torch \
@@ -32,3 +32,28 @@ jobs:
       - name: Torch-loaded probe (replicates vLLM import order)
         run: |
           python3 -c "import torch, mlx.core as mx; print('after torch, mx.metal.is_available:', mx.metal.is_available())"
+
+  # Full CI path on candidate pools, running the fix/ci-cpu-memory-check
+  # branch (gate v2). Healthy host -> real Metal smokes + pytest; broken
+  # host -> the gate converts it to a visible skip.
+  full-pipeline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: fix/ci-cpu-memory-check
+          submodules: recursive
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-${{ runner.os }}-${{ hashFiles('scripts/test.sh') }}
+      - name: Test (full CI path with Metal gate)
+        run: |
+          scripts/test.sh
