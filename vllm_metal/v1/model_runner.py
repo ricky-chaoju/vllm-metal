@@ -562,6 +562,10 @@ class MetalModelRunner:
         self._intermediate_forward_supported = (
             self._model_adapter.supports_intermediate_forward(self._forward_model)
         )
+        # Decode-dispatch installs wrap model modules in place, so they
+        # run after the split has pruned non-owned layers (load -> split ->
+        # install; pinned by the ordering test).
+        self._model_lifecycle.install_decode_dispatch()
         text_config = getattr(self.model_config.hf_config, "get_text_config", None)
         max_position_embeddings = None
         if callable(text_config):

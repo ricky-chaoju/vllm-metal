@@ -33,15 +33,17 @@ Metal libraries from concatenated source:
 | **GDN linear attention** | `_build_gdn_source` → `init_gdn_library` | `utils.metal` · `gdn_linear_attention.metal` |
 | **MLA** | `_build_mla_paged_attention_source` → `init_mla_library` | `utils.metal` · `mla.metal` |
 
-### 2. `mx.fast.metal_kernel` snippets — `attention/impls/gdn_lazy.py`
+### 2. `mx.fast.metal_kernel` snippets
 
-The lazy GDN decode fast path compiles two shaders directly through MLX
-(not the C++ extension), via `_read_v2_metal_source`:
+The lazy GDN decode fast path (`attention/impls/gdn_lazy.py`) and the
+fused MoE decode dispatch (`fused_moe.py`) compile shaders directly
+through MLX (not the C++ extension), via `_read_v2_metal_source`:
 
 | Shader | Compiled kernel name |
 |--------|----------------------|
 | `gdn_conv1d_silu_decode.metal` | `gdn_conv1d_silu_decode_v2` |
 | `gdn_recurrent_decode.metal` | `gdn_recurrent_v2` |
+| `moe_gateup_swiglu_decode.metal` (header `moe_q4_dot.metal`) | `moe_gateup_swiglu_decode` |
 
 ## File reference
 
@@ -56,6 +58,8 @@ The lazy GDN decode fast path compiles two shaders directly through MLX
 | `gdn_linear_attention.metal` | GDN (gated delta-net) linear-attention kernel for hybrid models (prefill / chunked path). |
 | `gdn_conv1d_silu_decode.metal` | Lazy GDN decode: causal conv1d + SiLU. Compiled via `mx.fast.metal_kernel`. |
 | `gdn_recurrent_decode.metal` | Lazy GDN decode: recurrent state update. Compiled via `mx.fast.metal_kernel`. |
+| `moe_q4_dot.metal` | Header helpers for the fused MoE decode kernel: MLX affine 4-bit nibble dot with the uint4 lane tile. |
+| `moe_gateup_swiglu_decode.metal` | Fused MoE decode: gate/up projections + SwiGLU for the top-k experts in one launch. Compiled via `mx.fast.metal_kernel`. |
 
 ## Unwired leftover shaders
 

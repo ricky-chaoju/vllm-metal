@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     VLLM_METAL_MODELSCOPE_CACHE: str | None = None
     VLLM_METAL_GDN_LAZY_KERNELS: bool = True
     VLLM_METAL_DECODE_PIPELINE: bool = False
+    VLLM_METAL_FUSED_MOE_DECODE: bool = False
     VLLM_METAL_MLA_KERNEL: bool = False
     VLLM_METAL_SPEC_VERIFY_WINDOW: bool = False
     VLLM_METAL_BUILD_FROM_SOURCE: bool = False
@@ -65,6 +66,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # the default is the fully synchronous per-step sample path.
     "VLLM_METAL_DECODE_PIPELINE": lambda: (
         os.getenv("VLLM_METAL_DECODE_PIPELINE", "0") == "1"
+    ),
+    # Fused MoE decode dispatch (opt-in): decode-shaped SwitchGLU calls run
+    # gate/up/SwiGLU in one Metal kernel instead of two unsorted gather_qmm
+    # + three elementwise ops. Set to "1" to enable; the default is the
+    # stock mlx_lm dispatch on every call.
+    "VLLM_METAL_FUSED_MOE_DECODE": lambda: (
+        os.getenv("VLLM_METAL_FUSED_MOE_DECODE", "0") == "1"
     ),
     # Experimental MLA Metal decode kernel (RFC #360). Off by default —
     # the MLA wrapper uses the MLX SDPA per-request slow path unless
