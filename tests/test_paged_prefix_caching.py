@@ -247,7 +247,7 @@ class TestSamplingMetadataWithPenalties:
 
         captured_batches: list = []
 
-        def spy_sample(logits_2d, batch, sampler, device):
+        def spy_sample(logits_2d, batch, sampler):
             captured_batches.append(batch)
             return _SamplingResult([99])
 

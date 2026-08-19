@@ -168,7 +168,7 @@ class TestV1MetalModelRunnerGenerate:
         )
 
         with pytest.raises(NotImplementedError, match="custom logits processors"):
-            mr.MetalModelRunner(vllm_config, torch.device("cpu"))
+            mr.MetalModelRunner(vllm_config)
 
     def test_warm_up_propagates_dummy_forward_failure(self) -> None:
         runner = self._make_runner()
@@ -1201,8 +1201,8 @@ class TestV1MetalModelRunnerSpecDecodeVerification:
         )
         sampled_rows = []
 
-        def fake_sample_from_logits(logits_2d, batch, sampler, device):
-            del sampler, device
+        def fake_sample_from_logits(logits_2d, batch, sampler):
+            del sampler
             sampled_rows.append(logits_2d.tolist())
             assert [sp.temperature for sp in batch.sampling_params_list] == [0.7]
             return mr._SamplingResult([4])

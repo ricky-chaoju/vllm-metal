@@ -144,7 +144,6 @@ def _lora_id_from_request_data(new_req: NewRequestData) -> int | None:
 
 
 def _create_request_generator(
-    device: torch.device,
     sampling_params: SamplingParams,
 ) -> torch.Generator | None:
     """Create a per-request generator for seeded sampling.
@@ -156,7 +155,7 @@ def _create_request_generator(
         return None
     if sampling_params.temperature < GREEDY_TEMPERATURE_EPS:
         return None
-    generator = torch.Generator(device=device)
+    generator = torch.Generator(device=SamplingBatch.SAMPLER_DEVICE)
     generator.manual_seed(sampling_params.seed)
     return generator
 
@@ -314,16 +313,11 @@ class MetalModelRunner:
     Uses true batched decode with BatchKVCache for efficient parallel processing.
     """
 
-    def __init__(
-        self,
-        vllm_config: VllmConfig,
-        device: torch.device,
-    ):
+    def __init__(self, vllm_config: VllmConfig):
         """Initialize model runner.
 
         Args:
             vllm_config: vLLM configuration
-            device: PyTorch device (CPU for Metal interop)
         """
         if vllm_config.model_config.logits_processors or entry_points(
             group=LOGITSPROCS_GROUP
@@ -337,7 +331,6 @@ class MetalModelRunner:
         self.cache_config = vllm_config.cache_config
         self.scheduler_config = vllm_config.scheduler_config
         self.use_async_scheduling = bool(self.scheduler_config.async_scheduling)
-        self.device = device
         self.metal_config = get_config()
         self._model_adapter: ModelAdapter = DefaultModelAdapter()
         self._cache_policy = ModelCachePolicy(self, self._model_adapter)
@@ -951,7 +944,6 @@ class MetalModelRunner:
             prompt_token_id_lists,
             output_token_id_lists,
             vocab_size=self._vocab_size,
-            device=self.device,
             generators=generators,
         ).make_sampling_metadata()
 
@@ -987,10 +979,9 @@ class MetalModelRunner:
             [token_ids],
             [[]],
             vocab_size=vocab_size,
-            device=self.device,
             generators=generators,
         )
-        result = sample_from_logits(last_logits, batch, self._sampler, self.device)
+        result = sample_from_logits(last_logits, batch, self._sampler)
         [next_token] = result.token_ids
         mx.eval(*[c.state for c in cache])
 
@@ -1048,12 +1039,9 @@ class MetalModelRunner:
             prompt_token_ids_list,
             output_tokens_list,
             vocab_size=vocab_size,
-            device=self.device,
             generators=generators,
         )
-        result = sample_from_logits(
-            next_token_logits, batch, self._sampler, self.device
-        )
+        result = sample_from_logits(next_token_logits, batch, self._sampler)
         next_tokens = result.token_ids
 
         # Extract updated caches back to individual requests
@@ -1095,10 +1083,9 @@ class MetalModelRunner:
                 [state.token_ids[: state.prompt_len]],
                 [state.token_ids[state.prompt_len :]],
                 vocab_size=vocab_size,
-                device=self.device,
                 generators=generators,
             )
-            result = sample_from_logits(last_logits, batch, self._sampler, self.device)
+            result = sample_from_logits(last_logits, batch, self._sampler)
             [next_token] = result.token_ids
 
             next_tokens.append(next_token)
@@ -1614,14 +1601,10 @@ class MetalModelRunner:
                     prompt_token_ids_list,
                     output_tokens_list,
                     vocab_size=vocab_size,
-                    device=self.device,
                     generators=generators,
                 )
                 plain_result = sample_from_logits(
-                    plain_logits,
-                    plain_batch,
-                    self._sampler,
-                    self.device,
+                    plain_logits, plain_batch, self._sampler
                 )
                 for plain_index, (decode_index, _, _) in enumerate(plain_items):
                     decode_token_ids[decode_index] = [
@@ -1638,7 +1621,6 @@ class MetalModelRunner:
                 decode_reqs,
                 num_decode_tokens,
                 self._sampler,
-                self.device,
                 vocab_size=vocab_size,
             )
             decode_token_ids = [[token_id] for token_id in decode_result.token_ids]
@@ -1649,7 +1631,6 @@ class MetalModelRunner:
             cu_seqlens,
             num_decode_segments,
             self._sampler,
-            self.device,
             vocab_size=vocab_size,
         )
 
@@ -2159,7 +2140,7 @@ class MetalModelRunner:
                 batch.add_output(req_id, [0])
                 continue
 
-            generator = _create_request_generator(self.device, sampling_params)
+            generator = _create_request_generator(sampling_params)
 
             if self._paged_attention_runtime is not None:
                 sched_block_ids = self._copy_paged_block_ids(new_req.block_ids)

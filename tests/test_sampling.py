@@ -283,7 +283,7 @@ class TestV1SeededSamplingGenerator:
         )
 
         sp = SamplingParams(temperature=1.0, seed=123)
-        generator = _create_request_generator(runner.device, sp)
+        generator = _create_request_generator(sp)
         assert generator is not None
 
         state = RequestState(
@@ -304,6 +304,69 @@ class TestV1SeededSamplingGenerator:
         assert not torch.equal(after_second, after_first)
 
 
+class TestSamplerDevicePolicy:
+    """Regression tests for #622: torch sampling must never run on MPS.
+
+    ``exponential_()`` on MPS can return exact zeros, which the vLLM
+    sampler's Gumbel-style division turns into inf/NaN rows whose argmax
+    lands on an arbitrary vocab id.
+    """
+
+    def test_sampling_metadata_tensors_live_on_cpu(self) -> None:
+        batch = SamplingBatch(
+            [
+                SamplingParams(temperature=0.8, top_k=20, top_p=0.9),
+                SamplingParams(temperature=1.0, presence_penalty=0.5),
+                SamplingParams(temperature=0.7, allowed_token_ids=[1, 2]),
+            ],
+            [[1, 2], [3], [4]],
+            [[], [], []],
+            vocab_size=VOCAB_SIZE,
+        )
+
+        metadata = batch.make_sampling_metadata()
+
+        assert metadata.temperature is not None
+        assert metadata.temperature.device.type == "cpu"
+        assert metadata.top_k is not None
+        assert metadata.top_k.device.type == "cpu"
+        assert metadata.top_p is not None
+        assert metadata.top_p.device.type == "cpu"
+        assert metadata.prompt_token_ids is not None
+        assert metadata.prompt_token_ids.device.type == "cpu"
+        assert metadata.frequency_penalties.device.type == "cpu"
+        assert metadata.presence_penalties.device.type == "cpu"
+        assert metadata.repetition_penalties.device.type == "cpu"
+        assert metadata.allowed_token_ids_mask is not None
+        assert metadata.allowed_token_ids_mask.device.type == "cpu"
+
+    def test_seeded_generator_lives_on_cpu(self) -> None:
+        generator = _create_request_generator(SamplingParams(temperature=1.0, seed=7))
+
+        assert generator is not None
+        assert generator.device.type == "cpu"
+
+    def test_bridged_logits_reach_sampler_on_cpu(self) -> None:
+        logits = mx.array([[0.0, 1.0, 4.0, 2.0]], dtype=mx.float32)
+        batch = SamplingBatch(
+            [SamplingParams(temperature=0.8, top_k=2)],
+            [[1]],
+            [[]],
+            vocab_size=4,
+        )
+        seen_devices: list[torch.device] = []
+
+        class SpySampler(Sampler):
+            def forward(self, logits_torch, sampling_metadata):  # noqa: ANN001
+                seen_devices.append(logits_torch.device)
+                return super().forward(logits_torch, sampling_metadata)
+
+        result = sample_from_logits(logits, batch, SpySampler())
+
+        assert [d.type for d in seen_devices] == ["cpu"]
+        assert 0 <= result.token_ids[0] < 4
+
+
 class TestV1SamplingBatch:
     @staticmethod
     def _batch(params_list: list[SamplingParams]) -> SamplingBatch:
@@ -312,7 +375,6 @@ class TestV1SamplingBatch:
             [[1]] * len(params_list),
             [[]] * len(params_list),
             vocab_size=VOCAB_SIZE,
-            device=torch.device("cpu"),
         )
 
     def test_prefill_requests_share_one_sampler_batch(self, monkeypatch) -> None:
@@ -344,7 +406,6 @@ class TestV1SamplingBatch:
             cu_seqlens=[0, 2, 4, 6],
             num_decode=1,
             sampler=Sampler(),
-            device=torch.device("cpu"),
             vocab_size=4,
         )
 
@@ -368,7 +429,6 @@ class TestV1SamplingBatch:
             cu_seqlens=[0],
             num_decode=0,
             sampler=Sampler(),
-            device=torch.device("cpu"),
             vocab_size=4,
         )
 
@@ -416,9 +476,8 @@ class TestV1SamplingBatch:
             [[1, 2, 3]],
             [[]],
             vocab_size=4,
-            device=torch.device("cpu"),
         )
-        result = sample_from_logits(logits, batch, Sampler(), torch.device("cpu"))
+        result = sample_from_logits(logits, batch, Sampler())
         assert result.token_ids[0] in [2, 3]
 
     def test_allowed_token_ids_mixed_batch(self) -> None:
@@ -434,9 +493,8 @@ class TestV1SamplingBatch:
             [[1, 2], [3, 4]],
             [[], []],
             vocab_size=4,
-            device=torch.device("cpu"),
         )
-        result = sample_from_logits(logits, batch, Sampler(), torch.device("cpu"))
+        result = sample_from_logits(logits, batch, Sampler())
         assert result.token_ids[0] in [2, 3]
         assert result.token_ids[1] == 1  # unconstrained, should pick highest logit
 
@@ -450,9 +508,8 @@ class TestV1SamplingBatch:
             [[1, 2, 3]],
             [[]],
             vocab_size=4,
-            device=torch.device("cpu"),
         )
-        result = sample_from_logits(logits, batch, Sampler(), torch.device("cpu"))
+        result = sample_from_logits(logits, batch, Sampler())
         assert result.token_ids[0] != 0  # token 0 should be blocked
 
     def test_can_use_native_greedy_requires_every_request_to_match(self) -> None:
@@ -486,7 +543,6 @@ class TestV1SamplingBatch:
             [[1, 2, 3], [4, 5], [6]],
             [[], [], []],
             vocab_size=VOCAB_SIZE,
-            device=torch.device("cpu"),
         )
         assert batch.no_penalties
 
@@ -515,7 +571,6 @@ class TestV1SamplingBatch:
             [[1], [2], [3]],
             [[], [], []],
             vocab_size=VOCAB_SIZE,
-            device=torch.device("cpu"),
         )
         assert not batch.no_penalties
 
@@ -532,7 +587,6 @@ class TestV1SamplingBatch:
             [[1, 2, 3]],
             [[]],
             vocab_size=VOCAB_SIZE,
-            device=torch.device("cpu"),
         )
 
         metadata = batch.make_sampling_metadata()
@@ -545,7 +599,6 @@ class TestV1SamplingBatch:
             [[1, 2, 3]],
             [[]],
             vocab_size=VOCAB_SIZE,
-            device=torch.device("cpu"),
         )
 
         with pytest.raises(
@@ -563,7 +616,6 @@ class TestV1SamplingBatch:
             [[1, 2, 3], [4, 5]],
             [[], []],
             vocab_size=VOCAB_SIZE,
-            device=torch.device("cpu"),
         )
 
         with pytest.raises(
@@ -579,10 +631,9 @@ class TestV1SamplingBatch:
             [[1, 2, 3]],
             [[]],
             vocab_size=4,
-            device=torch.device("cpu"),
         )
 
-        result = sample_from_logits(logits, batch, Sampler(), torch.device("cpu"))
+        result = sample_from_logits(logits, batch, Sampler())
 
         assert result.token_ids == [2]
         assert result.logprobs is not None

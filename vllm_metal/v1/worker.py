@@ -125,10 +125,10 @@ class MetalWorker(WorkerBase):
         logger.info(f"MLX device set to: {mx.default_device()}")
         set_wired_limit()
 
-        # Use MetalPlatform.get_torch_device() to properly support MPS when available.
-        # This ensures consistency with the platform's device selection logic and
-        # allows using MPS for PyTorch operations (like vLLM's sampler) when supported,
-        # while falling back to CPU if MPS is not available.
+        # ``self.device`` is the upstream WorkerBase contract field for the
+        # torch device. Torch sampling deliberately does not follow it: the
+        # sampler is pinned to ``SamplingBatch.SAMPLER_DEVICE`` (CPU) because
+        # MPS ``exponential_()`` can corrupt sampled tokens (#622).
         self.device = MetalPlatform.get_torch_device(0)
         logger.info(f"PyTorch device set to: {self.device}")
 
@@ -187,10 +187,7 @@ class MetalWorker(WorkerBase):
         else:
             from vllm_metal.v1.model_runner import MetalModelRunner
 
-            self.model_runner = MetalModelRunner(
-                vllm_config=self.vllm_config,
-                device=self.device,
-            )
+            self.model_runner = MetalModelRunner(vllm_config=self.vllm_config)
             # Hand the pipeline group to the runner so its forward path can pipe
             # activations stage-to-stage. None on the default single-stage path.
             self.model_runner.pp = self.pp

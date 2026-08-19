@@ -6,6 +6,7 @@ Pure functions: logits in, token IDs out.  No model runner state accessed.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import ClassVar
 
 import mlx.core as mx
 import numpy as np
@@ -41,6 +42,12 @@ class SamplingBatch:
     Today it owns only the sampling-side state for one step.
     """
 
+    # The torch sampler always runs on CPU. ``Tensor.exponential_()`` on MPS
+    # can return exact zeros, and the Gumbel-style ``probs.div(q).argmax()``
+    # in vLLM's sampler maps a zero draw to an inf/NaN row whose argmax picks
+    # an arbitrary vocab id (issue #622).
+    SAMPLER_DEVICE: ClassVar[torch.device] = torch.device("cpu")
+
     def __init__(
         self,
         sampling_params_list: Sequence[SamplingParams],
@@ -48,7 +55,6 @@ class SamplingBatch:
         output_token_id_lists: Sequence[list[int]],
         *,
         vocab_size: int,
-        device: torch.device,
         generators: dict[int, torch.Generator] | None = None,
     ) -> None:
         batch_size = len(sampling_params_list)
@@ -69,7 +75,6 @@ class SamplingBatch:
         self.prompt_token_id_lists = list(prompt_token_id_lists)
         self.output_token_id_lists = list(output_token_id_lists)
         self.vocab_size = vocab_size
-        self.device = device
         self.generators = {} if generators is None else generators
         self.all_greedy = all(
             sampling_params.temperature < GREEDY_TEMPERATURE_EPS
@@ -197,7 +202,7 @@ class SamplingBatch:
                 for sampling_params in self.sampling_params_list
             ],
             dtype=torch.float32,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
 
     def _make_top_p(self) -> torch.Tensor | None:
@@ -207,7 +212,7 @@ class SamplingBatch:
         return torch.tensor(
             [sampling_params.top_p for sampling_params in self.sampling_params_list],
             dtype=torch.float32,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
 
     def _make_top_k(self) -> torch.Tensor | None:
@@ -217,7 +222,7 @@ class SamplingBatch:
         return torch.tensor(
             [sampling_params.top_k for sampling_params in self.sampling_params_list],
             dtype=torch.int32,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
 
     def _make_prompt_token_ids(self) -> torch.Tensor | None:
@@ -227,7 +232,7 @@ class SamplingBatch:
         return make_tensor_with_pad(
             self.prompt_token_id_lists,
             pad=self.vocab_size,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
             dtype=torch.int64,
             pin_memory=False,
         )
@@ -243,7 +248,7 @@ class SamplingBatch:
         avoid allocating ``batch_size`` tensors three times every step.
         """
         if self.no_penalties:
-            empty = torch.empty(0, dtype=torch.float32, device=self.device)
+            empty = torch.empty(0, dtype=torch.float32, device=self.SAMPLER_DEVICE)
             return empty, empty, empty
 
         frequency_penalties = torch.tensor(
@@ -252,7 +257,7 @@ class SamplingBatch:
                 for sampling_params in self.sampling_params_list
             ],
             dtype=torch.float32,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
         presence_penalties = torch.tensor(
             [
@@ -260,7 +265,7 @@ class SamplingBatch:
                 for sampling_params in self.sampling_params_list
             ],
             dtype=torch.float32,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
         repetition_penalties = torch.tensor(
             [
@@ -268,7 +273,7 @@ class SamplingBatch:
                 for sampling_params in self.sampling_params_list
             ],
             dtype=torch.float32,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
         return frequency_penalties, presence_penalties, repetition_penalties
 
@@ -284,7 +289,7 @@ class SamplingBatch:
             len(self.sampling_params_list),
             self.vocab_size,
             dtype=torch.bool,
-            device=self.device,
+            device=self.SAMPLER_DEVICE,
         )
         for i, sp in enumerate(self.sampling_params_list):
             if sp.allowed_token_ids:
@@ -347,14 +352,14 @@ def sample_from_logits(
     logits_2d: mx.array,
     batch: SamplingBatch,
     sampler: Sampler,
-    device: torch.device,
 ) -> _SamplingResult:
     """Sample tokens from pre-sliced 2D logits ``(batch_size, vocab)``.
 
     Single entry point for all sampling paths.  Chooses native MLX greedy
-    when possible, otherwise bridges to the vLLM torch sampler. Requests that
-    need sample logprobs must use the vLLM sampler so ``ModelRunnerOutput`` can
-    satisfy the OpenAI serving contract.
+    when possible, otherwise bridges to the vLLM torch sampler on
+    ``SamplingBatch.SAMPLER_DEVICE``. Requests that need sample logprobs must
+    use the vLLM sampler so ``ModelRunnerOutput`` can satisfy the OpenAI
+    serving contract.
     """
     if batch.can_use_native_greedy() and not batch.needs_logprobs:
         tokens = mlx_greedy_tokens(logits_2d)
@@ -364,7 +369,9 @@ def sample_from_logits(
         return _SamplingResult(tokens.tolist())  # type: ignore[arg-type]
 
     mx.eval(logits_2d)
-    logits_torch = mlx_to_torch(logits_2d.astype(mx.float32), device=device)
+    logits_torch = mlx_to_torch(
+        logits_2d.astype(mx.float32), device=SamplingBatch.SAMPLER_DEVICE
+    )
     metadata = batch.make_sampling_metadata()
     output = sampler.forward(logits_torch, metadata)
     logprobs = (
@@ -380,7 +387,6 @@ def sample_decode_tokens(
     decode_reqs: list[tuple[str, object]],
     num_decode: int,
     sampler: Sampler,
-    device: torch.device,
     *,
     vocab_size: int,
 ) -> _SamplingResult:
@@ -391,7 +397,6 @@ def sample_decode_tokens(
         decode_reqs: ``(req_id, RequestState)`` pairs for decode requests.
         num_decode: Number of decode requests (prefix of the token dimension).
         sampler: vLLM Sampler instance.
-        device: PyTorch device for the torch bridge path.
         vocab_size: Model vocabulary size.
     Returns:
         Sampled token IDs and optional logprobs, one row per decode request.
@@ -419,10 +424,9 @@ def sample_decode_tokens(
         prompt_token_ids_list,
         output_tokens_list,
         vocab_size=vocab_size,
-        device=device,
         generators=generators,
     )
-    return sample_from_logits(decode_logits, batch, sampler, device)
+    return sample_from_logits(decode_logits, batch, sampler)
 
 
 def sample_prefill_tokens(
@@ -431,7 +435,6 @@ def sample_prefill_tokens(
     cu_seqlens: list[int],
     num_decode: int,
     sampler: Sampler,
-    device: torch.device,
     *,
     vocab_size: int,
 ) -> _SamplingResult:
@@ -443,7 +446,6 @@ def sample_prefill_tokens(
         cu_seqlens: Cumulative sequence lengths for logit position lookup.
         num_decode: Number of decode requests (offset into cu_seqlens).
         sampler: vLLM Sampler instance.
-        device: PyTorch device for the torch bridge path.
         vocab_size: Model vocabulary size.
     Returns:
         Sampled token IDs and optional logprobs, one row per prefill request.
@@ -474,11 +476,10 @@ def sample_prefill_tokens(
         prompt_token_id_lists,
         output_token_id_lists,
         vocab_size=vocab_size,
-        device=device,
         generators={
             j: pr.generator
             for j, pr in enumerate(prefill_reqs)
             if pr.generator is not None
         },
     )
-    return sample_from_logits(last_logits, batch, sampler, device)
+    return sample_from_logits(last_logits, batch, sampler)

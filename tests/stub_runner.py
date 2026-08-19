@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import mlx.core as mx
-import torch
 
 import vllm_metal.v1.model_runner as mr
 from vllm_metal.v1.cache_policy import ModelCachePolicy
@@ -78,7 +77,6 @@ def make_stub_runner(
         "head_dim_per_layer": None,
         "sliding_window_per_layer": None,
         "use_async_scheduling": True,
-        "device": torch.device("cpu"),
         "_sampler": None,
         "_structured_output_applier": MetalStructuredOutputApplier(),
         "_lora": MetalLoRARuntime(),
