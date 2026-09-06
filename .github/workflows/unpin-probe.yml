@@ -1,0 +1,38 @@
+# Fork-only diagnostic (see vllm-project/vllm-metal#471): that cap was added
+# after transformers 5.13.0 was A/B'd as the Metal-breakage culprit on the same
+# runner (5.13.0 -> CpuPlatform, 5.12.1 -> MetalPlatform). Four minor releases
+# later the local picture is clean (5.16.1 -> MetalPlatform, full suite green),
+# so this runs the real CI pipeline on the unpinned branch to see whether the
+# runner still reproduces it. Delete before upstreaming.
+name: Unpin probe
+on:
+  push:
+    branches: [fix/unpin-transformers]
+  workflow_dispatch:
+
+jobs:
+  unpinned-full-pipeline:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Report the resolved dependency versions
+        run: |
+          python3 -c "import sys; print(sys.version)"
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-${{ runner.os }}-${{ hashFiles('scripts/test.sh') }}
+      - name: Test (must run REAL Metal smokes, not the gate skip)
+        run: |
+          scripts/test.sh
