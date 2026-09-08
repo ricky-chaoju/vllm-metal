@@ -32,7 +32,6 @@ _CAPABLE_KWARGS = {
     "is_pooling": False,
     "pp_active": False,
     "hybrid_without_lazy_gdn": False,
-    "state_family_pipelined": True,
     "spec_decode_configured": False,
     "uniproc_executor": True,
 }
@@ -187,11 +186,6 @@ class TestGate:
                 "hybrid_without_lazy_gdn",
                 True,
                 "hybrid model without lazy GDN kernels",
-            ),
-            (
-                "state_family_pipelined",
-                False,
-                "state family without decode pipeline support",
             ),
             ("spec_decode_configured", True, "speculative decode"),
             ("uniproc_executor", False, "non-uniproc executor"),

@@ -118,8 +118,6 @@ NEMOTRON_H_FAMILY = StateFamilySpec(
     mamba_type=MambaAttentionBackendEnum.MAMBA2,
     # One private slot per resident request; state is not block-keyed.
     supported_cache_modes=("none",),
-    # Full-step path only; not validated on the decode pipeline.
-    supports_decode_pipeline=False,
     layer_name="mixer",
     # Mamba-2 keeps the same conv tail and (heads, head_dim, state) pool as GDN.
     create_state_cache=create_gdn_state_cache,

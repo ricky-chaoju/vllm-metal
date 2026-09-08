@@ -136,7 +136,6 @@ GDN_FAMILY = StateFamilySpec(
     mamba_type=MambaAttentionBackendEnum.GDN_ATTN,
     # Scheduler-side mamba caching strategies the GDN state path implements.
     supported_cache_modes=("none", "align"),
-    supports_decode_pipeline=True,
     layer_name="linear_attn",
     create_state_cache=create_gdn_state_cache,
 )

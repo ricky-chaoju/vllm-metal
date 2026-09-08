@@ -51,8 +51,6 @@ SHORTCONV_FAMILY = StateFamilySpec(
     is_state_module=is_shortconv,
     mamba_type=MambaAttentionBackendEnum.SHORT_CONV,
     supported_cache_modes=("none", "align"),
-    # Served with the decode pipeline since it landed on main.
-    supports_decode_pipeline=True,
     layer_name="conv",
     create_state_cache=_create_shortconv_state_cache,
 )

@@ -155,7 +155,6 @@ class StateFamilySpec:
     is_state_module: Callable[[Any], bool]
     mamba_type: MambaAttentionBackendEnum
     supported_cache_modes: tuple[str, ...]
-    supports_decode_pipeline: bool
     layer_name: str
     create_state_cache: StateCacheFactory
 
