@@ -130,7 +130,7 @@ logger = init_logger(__name__)
 SchedulerMemoryReportingMode: TypeAlias = Literal[
     "stt_nominal",
     "paged_attention_capacity",
-    "paged_attention_mha_layout_budget",
+    "paged_attention_layout_budget",
     "pooling_no_kv",
 ]
 
@@ -678,7 +678,7 @@ class MetalModelRunner:
         (``_start_paged_forward``) and the KV-cache spec size only this stage's
         layers — not the full model.
 
-        Only the validated path (uniform MHA, e.g. Qwen3) is supported under
+        Only the validated path (uniform SDPA attention, e.g. Qwen3) is supported under
         pipeline parallelism: fail loud on YOCO / hybrid / MLA models whose
         KV-cache layer accounting does not map cleanly onto a contiguous layer
         slice yet.
