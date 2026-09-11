@@ -406,7 +406,7 @@ class TestAttentionKVCacheLayout:
 
         assert layout.group_block_sizes == (32, 16)
         assert layout.slot_layers == ((0, 1), (2, 3))
-        assert [layer.tensor_index for layer in layout.layers] == [0, 0, 1, 1]
+        assert [layer.slot_index for layer in layout.layers] == [0, 0, 1, 1]
         assert [layer.group_index for layer in layout.layers] == [0, 1, 0, 1]
         assert [layer.sliding_window for layer in layout.layers] == [-1, 1024, -1, 1024]
         # Every tensor describes the same backing allocation the slots partition.

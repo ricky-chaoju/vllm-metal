@@ -33,7 +33,7 @@ class AttentionGroupLayout:
 
 
 @dataclass(frozen=True, slots=True)
-class MHATensorLayout:
+class SlotLayout:
     """vLLM physical slots (distinct region addresses) and layer-to-slot mapping."""
 
     layer_indices: dict[str, int]
@@ -44,7 +44,7 @@ class MHATensorLayout:
 class AttentionLayerKVLayout:
     """KV-cache shape and vLLM mapping for one model layer."""
 
-    tensor_index: int
+    slot_index: int
     group_index: int
     block_size: int
     num_kv_heads: int
@@ -95,15 +95,15 @@ class AttentionKVCacheLayoutTranslator:
         group_layout = self._group_layout()
         self._require_model_layers(group_layout.layer_indices, "group")
 
-        tensor_layout = self._tensor_layout(group_layout)
-        self._require_model_layers(tensor_layout.layer_indices, "tensor")
+        slot_layout = self._slot_layout(group_layout)
+        self._require_model_layers(slot_layout.layer_indices, "tensor")
 
         return AttentionKVCacheLayout(
             num_blocks=self.config.num_blocks,
             allocation_bytes=self.config.kv_cache_tensors[0].size,
-            layers=self._layer_layouts(group_layout, tensor_layout),
+            layers=self._layer_layouts(group_layout, slot_layout),
             group_block_sizes=tuple(spec.block_size for spec in group_layout.specs),
-            slot_layers=tensor_layout.slot_layers,
+            slot_layers=slot_layout.slot_layers,
         )
 
     @property
@@ -131,7 +131,7 @@ class AttentionKVCacheLayoutTranslator:
                 layer_indices[layer_name] = group_index
         return AttentionGroupLayout(specs=tuple(specs), layer_indices=layer_indices)
 
-    def _tensor_layout(self, group_layout: AttentionGroupLayout) -> MHATensorLayout:
+    def _slot_layout(self, group_layout: AttentionGroupLayout) -> SlotLayout:
         layer_indices: dict[str, int] = {}
         slot_layers: list[list[int]] = []
         slot_by_address: dict[int, int] = {}
@@ -147,7 +147,7 @@ class AttentionKVCacheLayoutTranslator:
                 layer_indices[layer_name] = slot
                 slot_layers[slot].append(model_layer_indices[layer_name])
 
-        return MHATensorLayout(
+        return SlotLayout(
             layer_indices=layer_indices,
             slot_layers=tuple(tuple(layers) for layers in slot_layers),
         )
@@ -155,10 +155,10 @@ class AttentionKVCacheLayoutTranslator:
     def _layer_layouts(
         self,
         group_layout: AttentionGroupLayout,
-        tensor_layout: MHATensorLayout,
+        slot_layout: SlotLayout,
     ) -> tuple[AttentionLayerKVLayout, ...]:
         return tuple(
-            self._layer_layout(layer_name, group_layout, tensor_layout)
+            self._layer_layout(layer_name, group_layout, slot_layout)
             for layer_name in self.model_layer_names
         )
 
@@ -166,12 +166,12 @@ class AttentionKVCacheLayoutTranslator:
         self,
         layer_name: str,
         group_layout: AttentionGroupLayout,
-        tensor_layout: MHATensorLayout,
+        slot_layout: SlotLayout,
     ) -> AttentionLayerKVLayout:
         group_index = group_layout.layer_indices[layer_name]
         spec = group_layout.specs[group_index]
         return AttentionLayerKVLayout(
-            tensor_index=tensor_layout.layer_indices[layer_name],
+            slot_index=slot_layout.layer_indices[layer_name],
             group_index=group_index,
             block_size=spec.block_size,
             num_kv_heads=spec.num_kv_heads,

@@ -245,12 +245,12 @@ class MetalPagedKVCache:
 
         for layer in layout.layers:
             self.key_caches.append(
-                self._key_slots[layer.tensor_index].reshape(
+                self._key_slots[layer.slot_index].reshape(
                     layer.cache_shape(self.num_blocks)
                 )
             )
             self.value_caches.append(
-                self._value_slots[layer.tensor_index].reshape(
+                self._value_slots[layer.slot_index].reshape(
                     layer.cache_shape(self.num_blocks)
                 )
             )
@@ -316,7 +316,7 @@ class MetalPagedKVCache:
             self.value_caches[layer_idx] = value_cache
             return
 
-        slot = self._layout.layers[layer_idx].tensor_index
+        slot = self._layout.layers[layer_idx].slot_index
         self._key_slots[slot] = key_cache
         self._value_slots[slot] = value_cache
         for shared_layer in self._layout.slot_layers[slot]:
