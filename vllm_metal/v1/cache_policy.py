@@ -32,9 +32,9 @@ from vllm_metal.attention.caches.turboquant import (
 )
 from vllm_metal.attention.runtime.hybrid import HybridPagedAttentionRuntime
 from vllm_metal.attention.runtime.hybrid_plan import HybridRuntimePlan
-from vllm_metal.attention.runtime.mha import MHAPagedAttentionRuntime
 from vllm_metal.attention.runtime.mla import MLAPagedAttentionRuntime
 from vllm_metal.attention.runtime.protocol import PagedAttentionRuntime
+from vllm_metal.attention.runtime.sdpa import SDPAPagedAttentionRuntime
 from vllm_metal.attention.yoco import try_enable_gemma4_yoco_fast_prefill
 from vllm_metal.config import (
     PAGED_ATTENTION_MIN_BLOCKS,
@@ -569,7 +569,7 @@ class ModelCachePolicy:
     def _initialize_deferred_mha_layout(self, kv_cache_config: KVCacheConfig) -> None:
         model_layer_names = self._mha_model_layer_names()
         layout = AttentionKVCacheLayout.from_config(kv_cache_config, model_layer_names)
-        runtime = self._build_mha_backend(block_size=layout.group_block_sizes[0])
+        runtime = self._build_sdpa_backend(block_size=layout.group_block_sizes[0])
         runtime.adopt_layout(layout)
         runtime.patch_model(self._runner.model)
         self._runner.install_paged_attention_runtime(
@@ -594,8 +594,8 @@ class ModelCachePolicy:
         runtime: PagedAttentionRuntime,
         kv_cache_config: KVCacheConfig,
     ) -> None:
-        if not isinstance(runtime, MHAPagedAttentionRuntime):
-            raise RuntimeError("MHA cache config requires MHAPagedAttentionRuntime")
+        if not isinstance(runtime, SDPAPagedAttentionRuntime):
+            raise RuntimeError("MHA cache config requires SDPAPagedAttentionRuntime")
 
         model_layer_names = self._mha_model_layer_names()
         group_indices = self._scheduler_group_indices_for_layers(
@@ -904,7 +904,7 @@ class ModelCachePolicy:
             return self._build_hybrid_backend(block_size)
         if self._runner.is_mla:
             return self._build_mla_backend(block_size)
-        return self._build_mha_backend(block_size)
+        return self._build_sdpa_backend(block_size)
 
     def install_gemma4_mtp_kv_sharing(
         self,
@@ -916,9 +916,9 @@ class ModelCachePolicy:
         assistant = self._runner._gemma4_mtp_assistant
         if assistant is None:
             return
-        if not isinstance(backend, MHAPagedAttentionRuntime):
+        if not isinstance(backend, SDPAPagedAttentionRuntime):
             raise NotImplementedError(
-                "Gemma4 MTP assistant KV sharing requires the MHA paged "
+                "Gemma4 MTP assistant KV sharing requires the SDPA paged "
                 "attention backend on Metal."
             )
         target_metadata = Gemma4MTPTargetMetadata.from_model_args(
@@ -961,7 +961,7 @@ class ModelCachePolicy:
             dtype=self._require_kv_cache_dtype(),
         )
 
-    def _build_mha_backend(self, block_size: int) -> MHAPagedAttentionRuntime:
+    def _build_sdpa_backend(self, block_size: int) -> SDPAPagedAttentionRuntime:
         num_layers, cache_idx_map = self._mha_cache_layout()
         config = get_config()
         kv_heads, head_dims = self._cache_layer_shapes(num_layers)
@@ -973,7 +973,7 @@ class ModelCachePolicy:
         # which points back to a same-type unique layer by construction.
         sw = self._runner.sliding_window_per_layer
         sw_list = sw[:num_layers] if sw is not None else None
-        return MHAPagedAttentionRuntime(
+        return SDPAPagedAttentionRuntime(
             num_layers=num_layers,
             num_kv_heads=self._runner.num_kv_heads,
             head_dim=self._runner.head_dim,

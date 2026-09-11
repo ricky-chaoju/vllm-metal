@@ -29,8 +29,8 @@ from vllm_metal.attention.caches.attention_layout import AttentionKVCacheLayout
 from vllm_metal.attention.caches.kv_cache import MetalPagedKVCache
 from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.attention.impls.sdpa_wrapper import SDPAPagedAttentionWrapper
-from vllm_metal.attention.runtime.mha import (
-    MHAPagedAttentionRuntime,
+from vllm_metal.attention.runtime.sdpa import (
+    SDPAPagedAttentionRuntime,
 )
 from vllm_metal.config import (
     AUTO_MEMORY_FRACTION,
@@ -189,14 +189,14 @@ class TestMetalPagedKVCachePerLayer:
         assert "4.7 MB" not in messages[0]
 
 
-class TestMHABackendPerLayer:
-    """MHAPagedAttentionRuntime passes per-layer shapes to cache."""
+class TestSDPARuntimePerLayer:
+    """SDPAPagedAttentionRuntime passes per-layer shapes to cache."""
 
     def test_backend_propagates_per_layer_shapes(self) -> None:
         kv_heads = [16, 4]
         head_dims = [256, 512]
 
-        backend = MHAPagedAttentionRuntime(
+        backend = SDPAPagedAttentionRuntime(
             num_layers=2,
             num_kv_heads=kv_heads[0],
             head_dim=head_dims[0],
@@ -433,7 +433,7 @@ class TestAttentionKVCacheLayout:
             kv_cache_dtype=mx.bfloat16,
             cache_config=SimpleNamespace(block_size=32),
         )
-        backend = MHAPagedAttentionRuntime(
+        backend = SDPAPagedAttentionRuntime(
             num_layers=4,
             num_kv_heads=4,
             head_dim=512,
@@ -481,7 +481,7 @@ class TestAttentionKVCacheLayout:
             kv_heads_per_layer=[16, 16, 4, 4],
             head_dim_per_layer=[256, 256, 512, 512],
         )
-        backend = MHAPagedAttentionRuntime(
+        backend = SDPAPagedAttentionRuntime(
             num_layers=4,
             num_kv_heads=16,
             head_dim=256,
@@ -578,7 +578,7 @@ class TestAttentionKVCacheLayout:
         runner.initialize_kv_cache(config)
 
         backend = runner.paged_attention_runtime
-        assert isinstance(backend, MHAPagedAttentionRuntime)
+        assert isinstance(backend, SDPAPagedAttentionRuntime)
         assert backend.num_blocks() == config.num_blocks
         assert runner._paged_scheduler_group_indices == (0, 1, 2, 3, 4, 5)
         assert runner._paged_group_block_sizes == (16, 16, 16, 16, 16, 32)

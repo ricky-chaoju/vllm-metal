@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared lifecycle base for the paged attention runtimes.
 
-The three concrete runtimes (MHA, MLA, hybrid) differ only in which caches they
+The three concrete runtimes (SDPA, MLA, hybrid) differ only in which caches they
 allocate and how they wrap layers; their initialise-guard, warm-up, and
 block-count plumbing is identical.  That shared plumbing lives here so there is
 one copy instead of three.

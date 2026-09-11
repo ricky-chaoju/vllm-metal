@@ -12,7 +12,7 @@ from vllm.sampling_params import SamplingParams
 
 from tests.stub_runner import make_stub_runner
 from vllm_metal.attention.context import get_context
-from vllm_metal.attention.runtime.mha import MHAPagedAttentionRuntime
+from vllm_metal.attention.runtime.sdpa import SDPAPagedAttentionRuntime
 from vllm_metal.multimodal import MultiModalFeatureSpec, PlaceholderRange
 from vllm_metal.multimodal.qwen3_vl import Qwen3VLVisionEncodeResult
 from vllm_metal.v1.mm import EncoderCache
@@ -120,7 +120,7 @@ def _runner(adapter: _MmAdapter, *, num_layers: int = 1):
     runner = make_stub_runner(
         encoder_cache=EncoderCache(),
         _is_vlm=True,
-        _paged_attention_runtime=MHAPagedAttentionRuntime(
+        _paged_attention_runtime=SDPAPagedAttentionRuntime(
             num_layers=num_layers,
             num_kv_heads=1,
             head_dim=4,

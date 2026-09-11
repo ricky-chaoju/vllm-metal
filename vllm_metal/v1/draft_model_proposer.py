@@ -88,7 +88,7 @@ from vllm_metal.attention.context import (
     clear_context,
     prepare_unified,
 )
-from vllm_metal.attention.runtime.mha import MHAPagedAttentionRuntime
+from vllm_metal.attention.runtime.sdpa import SDPAPagedAttentionRuntime
 from vllm_metal.metal.constants import PA_WINDOW_MAX_HEAD_SIZE
 from vllm_metal.utils import get_model_download_path
 from vllm_metal.v1.mlx_lm_paths import mlx_lm_compatible_model_path
@@ -218,7 +218,7 @@ class DraftModelProposer:
     ) -> DraftModelProposer:
         model, dims = _load_draft_model(speculative_config, parallel_config)
         total_blocks = committed_num_blocks + scratch_reserve_blocks
-        backend = MHAPagedAttentionRuntime(
+        backend = SDPAPagedAttentionRuntime(
             num_layers=dims.num_layers,
             num_kv_heads=dims.num_kv_heads,
             head_dim=dims.head_dim,
@@ -249,7 +249,7 @@ class DraftModelProposer:
             extract_logits=extract_logits,
             # Mirror of the runner's `merge_verify_windows` structural
             # conditions, reduced to what can arise here: this proposer
-            # patches drafts through `MHAPagedAttentionRuntime`, so the
+            # patches drafts through `SDPAPagedAttentionRuntime`, so the
             # runner's MLA-native-decode and GDN-pure-decode arms are
             # vacuous, and `_load_draft_model` resolves one uniform
             # head_dim.  Only the decode kernel's head bound remains.

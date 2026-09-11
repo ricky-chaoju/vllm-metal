@@ -21,7 +21,7 @@ from vllm.v1.core.sched.output import NewRequestData  # noqa: E402
 from vllm.v1.kv_cache_interface import KVCacheConfig  # noqa: E402
 
 from tests.stub_runner import make_stub_runner  # noqa: E402
-from vllm_metal.attention.runtime.mha import MHAPagedAttentionRuntime  # noqa: E402
+from vllm_metal.attention.runtime.sdpa import SDPAPagedAttentionRuntime  # noqa: E402
 from vllm_metal.multimodal import MultiModalFeatureSpec, PlaceholderRange  # noqa: E402
 from vllm_metal.pytorch_backend.tensor_bridge import mlx_to_torch  # noqa: E402
 from vllm_metal.v1 import model_runner as mr  # noqa: E402
@@ -296,7 +296,7 @@ def _make_runner(
         model_config=model_config or _pooling_model_config(),
         tokenizer=tokenizer,
         _paged_attention_runtime=(
-            MHAPagedAttentionRuntime(
+            SDPAPagedAttentionRuntime(
                 num_layers=1,
                 num_kv_heads=1,
                 head_dim=4,

@@ -6,8 +6,8 @@ Verifies the full chain from model config to Metal KV cache:
     config.layer_types + config.sliding_window
       -> DefaultModelAdapter.build_sliding_window_per_layer
       -> MetalModelRunner.sliding_window_per_layer
-      -> ModelCachePolicy._build_mha_backend (slice to num_cache_layers)
-      -> MHAPagedAttentionRuntime (kwarg)
+      -> ModelCachePolicy._build_sdpa_backend (slice to num_cache_layers)
+      -> SDPAPagedAttentionRuntime (kwarg)
       -> MetalPagedKVCache.sliding_window_per_layer
 
 Kernel-level correctness (that a ``sliding_window`` value actually

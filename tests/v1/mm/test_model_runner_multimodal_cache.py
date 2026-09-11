@@ -15,7 +15,7 @@ from vllm.v1.core.sched.output import (
 )
 
 from tests.stub_runner import make_stub_runner
-from vllm_metal.attention.runtime.mha import MHAPagedAttentionRuntime
+from vllm_metal.attention.runtime.sdpa import SDPAPagedAttentionRuntime
 from vllm_metal.multimodal import MultiModalFeatureSpec, PlaceholderRange
 from vllm_metal.multimodal.qwen3_vl import (
     Qwen3VLMultimodalAdapter,
@@ -95,7 +95,7 @@ def _runner_with_encoder_cache():
 def _paged_runner_with_encoder_cache():
     runner = make_stub_runner(
         encoder_cache=EncoderCache(),
-        _paged_attention_runtime=MHAPagedAttentionRuntime(
+        _paged_attention_runtime=SDPAPagedAttentionRuntime(
             num_layers=1,
             num_kv_heads=1,
             head_dim=4,
