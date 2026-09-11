@@ -20,7 +20,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
 )
 
-from vllm_metal.attention.caches.mha_layout import MHAKVCacheLayout
+from vllm_metal.attention.caches.attention_layout import AttentionKVCacheLayout
 from vllm_metal.attention.caches.placement import layer_addresses
 from vllm_metal.attention.caches.turboquant import (
     BLOCK_SIZE as TQ_BLOCK_SIZE,
@@ -568,7 +568,7 @@ class ModelCachePolicy:
 
     def _initialize_deferred_mha_layout(self, kv_cache_config: KVCacheConfig) -> None:
         model_layer_names = self._mha_model_layer_names()
-        layout = MHAKVCacheLayout.from_config(kv_cache_config, model_layer_names)
+        layout = AttentionKVCacheLayout.from_config(kv_cache_config, model_layer_names)
         runtime = self._build_mha_backend(block_size=layout.group_block_sizes[0])
         runtime.adopt_layout(layout)
         runtime.patch_model(self._runner.model)
@@ -611,7 +611,7 @@ class ModelCachePolicy:
         if len(group_indices) == 1:
             return
 
-        layout = MHAKVCacheLayout.from_config(kv_cache_config, model_layer_names)
+        layout = AttentionKVCacheLayout.from_config(kv_cache_config, model_layer_names)
         runtime.adopt_layout(layout)
         runtime.patch_model(self._runner.model)
         self.install_gemma4_mtp_kv_sharing(

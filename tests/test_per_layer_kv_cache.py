@@ -25,8 +25,8 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from tests.stub_runner import make_gemma4_mixed_mha_runner, make_stub_runner
+from vllm_metal.attention.caches.attention_layout import AttentionKVCacheLayout
 from vllm_metal.attention.caches.kv_cache import MetalPagedKVCache
-from vllm_metal.attention.caches.mha_layout import MHAKVCacheLayout
 from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.attention.impls.sdpa_wrapper import SDPAPagedAttentionWrapper
 from vllm_metal.attention.runtime.mha import (
@@ -342,8 +342,8 @@ class TestCachePolicyPerLayerBytes:
             runner.get_kv_cache_spec()
 
 
-class TestMHAKVCacheLayout:
-    """vLLM-managed standard-MHA cache layout contracts."""
+class TestAttentionKVCacheLayout:
+    """vLLM-managed standard attention cache layout contracts."""
 
     def gemma4_mixed_runner(
         self,
@@ -402,7 +402,7 @@ class TestMHAKVCacheLayout:
     def test_translates_upstream_slots_and_groups(self) -> None:
         config, names = self._mixed_mha_config()
 
-        layout = MHAKVCacheLayout.from_config(config, names)
+        layout = AttentionKVCacheLayout.from_config(config, names)
 
         assert layout.group_block_sizes == (32, 16)
         assert layout.slot_layers == ((0, 1), (2, 3))
@@ -414,7 +414,7 @@ class TestMHAKVCacheLayout:
 
     def test_allocates_shared_slots_from_layout(self) -> None:
         config, names = self._mixed_mha_config()
-        layout = MHAKVCacheLayout.from_config(config, names)
+        layout = AttentionKVCacheLayout.from_config(config, names)
 
         cache = MetalPagedKVCache.from_layout(layout, mx.bfloat16)
 
@@ -677,7 +677,7 @@ class TestMHAKVCacheLayout:
     def test_rebind_updates_every_layer_sharing_the_slot(self) -> None:
         config, names = self._mixed_mha_config()
         cache = MetalPagedKVCache.from_layout(
-            MHAKVCacheLayout.from_config(config, names), mx.bfloat16
+            AttentionKVCacheLayout.from_config(config, names), mx.bfloat16
         )
 
         new_key = cache.key_caches[1] + mx.array(1, dtype=mx.bfloat16)
@@ -697,4 +697,4 @@ class TestMHAKVCacheLayout:
         config, names = self._mixed_mha_config(vllm_config)
 
         with pytest.raises(NotImplementedError, match="layer-outermost"):
-            MHAKVCacheLayout.from_config(config, names)
+            AttentionKVCacheLayout.from_config(config, names)
