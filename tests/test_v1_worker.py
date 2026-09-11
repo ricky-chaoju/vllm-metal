@@ -38,7 +38,7 @@ from vllm_metal.v1.worker import MetalWorker  # noqa: E402
 class TestKVCacheLayoutRpcs:
     """The engine core resolves one KV layout from every worker's list."""
 
-    _MIXED_MHA_SPECS = (
+    _MIXED_ATTENTION_SPECS = (
         FullAttentionSpec(
             block_size=32, num_kv_heads=4, head_size=512, dtype=torch.bfloat16
         ),
@@ -63,7 +63,7 @@ class TestKVCacheLayoutRpcs:
         layout = resolve_kv_cache_layout(
             vllm_config,
             [worker.get_supported_kv_cache_layouts()],
-            self._MIXED_MHA_SPECS,
+            self._MIXED_ATTENTION_SPECS,
         )
 
         assert layout is KVCacheLayout.LBNHC
@@ -83,7 +83,7 @@ class TestKVCacheLayoutRpcs:
             resolve_kv_cache_layout(
                 VllmConfig(),
                 [worker.get_supported_kv_cache_layouts()],
-                self._MIXED_MHA_SPECS,
+                self._MIXED_ATTENTION_SPECS,
             )
 
     def test_initialize_from_config_records_resolved_layout(self) -> None:

@@ -78,7 +78,7 @@ class AttentionKVCacheLayout:
         """Translate a standard mixed-attention ``KVCacheConfig`` without regrouping.
 
         ``model_layer_names`` is the runner's ordered attention-layer sequence.
-        Each layer must occur exactly once in vLLM's group and tensor mappings.
+        Each layer must occur exactly once in vLLM's group and slot mappings.
         """
         return AttentionKVCacheLayoutTranslator(config, model_layer_names).translate()
 
@@ -96,7 +96,7 @@ class AttentionKVCacheLayoutTranslator:
         self._require_model_layers(group_layout.layer_indices, "group")
 
         slot_layout = self._slot_layout(group_layout)
-        self._require_model_layers(slot_layout.layer_indices, "tensor")
+        self._require_model_layers(slot_layout.layer_indices, "slot")
 
         return AttentionKVCacheLayout(
             num_blocks=self.config.num_blocks,

@@ -24,7 +24,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
 )
 
-from tests.stub_runner import make_gemma4_mixed_mha_runner, make_stub_runner
+from tests.stub_runner import make_gemma4_mixed_attention_runner, make_stub_runner
 from vllm_metal.attention.caches.attention_layout import AttentionKVCacheLayout
 from vllm_metal.attention.caches.kv_cache import MetalPagedKVCache
 from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
@@ -62,7 +62,7 @@ def config_from_vllm_groups(
     )
 
 
-def merged_full_mha_config() -> tuple[KVCacheConfig, tuple[str, ...]]:
+def merged_full_attention_config() -> tuple[KVCacheConfig, tuple[str, ...]]:
     names = tuple(f"layers.{index}.self_attn" for index in range(4))
     specs = {
         names[0]: FullAttentionSpec(
@@ -354,7 +354,7 @@ class TestAttentionKVCacheLayout:
         disable_hybrid_manager: bool = False,
         num_gpu_blocks_override: int | None = None,
     ):
-        return make_gemma4_mixed_mha_runner(
+        return make_gemma4_mixed_attention_runner(
             num_layers=num_layers,
             sliding_kv_heads=sliding_kv_heads,
             full_kv_heads=full_kv_heads,
@@ -362,7 +362,7 @@ class TestAttentionKVCacheLayout:
             num_gpu_blocks_override=num_gpu_blocks_override,
         )
 
-    def _mixed_mha_config(
+    def _mixed_attention_config(
         self, vllm_config: VllmConfig | None = None
     ) -> tuple[KVCacheConfig, tuple[str, ...]]:
         names = tuple(f"layers.{index}.self_attn" for index in range(4))
@@ -400,7 +400,7 @@ class TestAttentionKVCacheLayout:
         return config_from_vllm_groups(groups, 3, vllm_config), names
 
     def test_translates_upstream_slots_and_groups(self) -> None:
-        config, names = self._mixed_mha_config()
+        config, names = self._mixed_attention_config()
 
         layout = AttentionKVCacheLayout.from_config(config, names)
 
@@ -413,7 +413,7 @@ class TestAttentionKVCacheLayout:
         assert layout.total_bytes == config.kv_cache_tensors[0].size
 
     def test_allocates_shared_slots_from_layout(self) -> None:
-        config, names = self._mixed_mha_config()
+        config, names = self._mixed_attention_config()
         layout = AttentionKVCacheLayout.from_config(config, names)
 
         cache = MetalPagedKVCache.from_layout(layout, mx.bfloat16)
@@ -424,7 +424,7 @@ class TestAttentionKVCacheLayout:
         assert cache.block_size_for_layer(1) == 16
 
     def test_cache_policy_adopts_engine_layout(self, monkeypatch) -> None:
-        config, _ = self._mixed_mha_config()
+        config, _ = self._mixed_attention_config()
         runner = make_stub_runner(
             num_layers=4,
             num_kv_cache_layers=4,
@@ -470,7 +470,7 @@ class TestAttentionKVCacheLayout:
     def test_cache_policy_keeps_merged_single_group_on_existing_runtime(
         self, monkeypatch
     ) -> None:
-        config, _ = merged_full_mha_config()
+        config, _ = merged_full_attention_config()
         runner = make_stub_runner(
             num_layers=4,
             num_kv_cache_layers=4,
@@ -675,7 +675,7 @@ class TestAttentionKVCacheLayout:
             runner.initialize_kv_cache(config)
 
     def test_rebind_updates_every_layer_sharing_the_slot(self) -> None:
-        config, names = self._mixed_mha_config()
+        config, names = self._mixed_attention_config()
         cache = MetalPagedKVCache.from_layout(
             AttentionKVCacheLayout.from_config(config, names), mx.bfloat16
         )
@@ -694,7 +694,7 @@ class TestAttentionKVCacheLayout:
         """vLLM's block-outermost layout interleaves layers inside each block."""
         vllm_config = VllmConfig()
         record_kv_cache_layout(vllm_config.cache_config, KVCacheLayout.BLHNC.name)
-        config, names = self._mixed_mha_config(vllm_config)
+        config, names = self._mixed_attention_config(vllm_config)
 
         with pytest.raises(NotImplementedError, match="layer-outermost"):
             AttentionKVCacheLayout.from_config(config, names)

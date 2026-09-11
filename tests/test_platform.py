@@ -28,7 +28,7 @@ from vllm.v1.kv_cache_interface import (
 import vllm_metal.compat as compat
 import vllm_metal.config as vm_config
 import vllm_metal.platform as platform_module
-from tests.stub_runner import make_gemma4_mixed_mha_runner
+from tests.stub_runner import make_gemma4_mixed_attention_runner
 from vllm_metal.config import reset_config
 from vllm_metal.platform import MetalPlatform
 from vllm_metal.v1.cache_policy import WorkerCachePlanner
@@ -1656,7 +1656,7 @@ class TestKvBudgetBytes:
 class TestAutoFitMaxModelLenChain:
     """The -1 sentinel drives the null-block auto-fit contract on Metal shapes.
 
-    Builds the gemma-4-31B mixed-MHA KV shape and runs vLLM's
+    Builds the gemma-4-31B mixed-attention KV shape and runs vLLM's
     ``get_kv_cache_configs`` against fixed synthetic memory budgets: the
     fitted length leaves the null block free, a too-small pool fails, and
     the mixed layout keeps its budget shape (issue #505).
@@ -1674,7 +1674,7 @@ class TestAutoFitMaxModelLenChain:
     def gemma4_config_and_specs(
         self, *, original_max_model_len: int | None
     ) -> tuple[VllmConfig, dict[str, KVCacheSpec]]:
-        runner = make_gemma4_mixed_mha_runner(
+        runner = make_gemma4_mixed_attention_runner(
             num_layers=self._NUM_LAYERS,
             sliding_kv_heads=16,
             full_kv_heads=4,

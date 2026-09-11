@@ -931,7 +931,7 @@ class TestYocoCacheIntegration:
         assert block_bytes == expected
 
     def test_backend_uses_compact_layer_count(self) -> None:
-        """Runner backend factory should create MHA backend with reduced num_layers."""
+        """Runner backend factory should create the SDPA backend with reduced num_layers."""
         import mlx.core as mx
 
         from tests.stub_runner import make_stub_runner

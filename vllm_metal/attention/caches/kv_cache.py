@@ -41,7 +41,7 @@ class MetalPagedKVCache:
     and ``head_dim_per_layer`` are provided, each cache layer is allocated
     with its own ``(num_kv_heads, head_dim)`` pair.  When omitted, all
     layers share the scalar ``num_kv_heads`` / ``head_dim`` (backward
-    compat for MLA, Hybrid, and uniform MHA models).
+    compat for MLA, Hybrid, and uniform attention models).
     """
 
     def __init__(
@@ -280,7 +280,7 @@ class MetalPagedKVCache:
     def from_layout(
         cls, layout: AttentionKVCacheLayout, dtype: mx.Dtype
     ) -> MetalPagedKVCache:
-        """Allocate one physical K/V pair for every upstream tensor slot."""
+        """Allocate one physical K/V pair for every upstream slot."""
         first_layer = layout.layers[0]
         return cls(
             num_layers=len(layout.layers),
@@ -345,7 +345,7 @@ class MetalPagedKVCache:
                 arrays.extend(self.value_scale_caches)
                 arrays.extend(self.key_zero_caches)
         else:
-            # Logical layer views can share one upstream tensor slot. Copy the
+            # Logical layer views can share one upstream slot. Copy the
             # physical arrays once instead of repeating the same write through
             # every alias.
             arrays = [*self._key_slots, *self._value_slots]

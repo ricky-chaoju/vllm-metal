@@ -158,7 +158,7 @@ def make_stub_runner(
     return runner
 
 
-def make_gemma4_mixed_mha_runner(
+def make_gemma4_mixed_attention_runner(
     num_layers: int,
     sliding_kv_heads: int,
     full_kv_heads: int,
@@ -168,7 +168,7 @@ def make_gemma4_mixed_mha_runner(
     disable_hybrid_manager: bool = False,
     num_gpu_blocks_override: int | None = None,
 ) -> mr.MetalModelRunner:
-    """Create a Gemma4 mixed sliding/full MHA runner stub."""
+    """Create a Gemma4 mixed sliding/full attention runner stub."""
     layer_types = [
         "full_attention" if (index + 1) % 6 == 0 else "sliding_attention"
         for index in range(num_layers)

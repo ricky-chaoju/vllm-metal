@@ -1358,7 +1358,7 @@ class TestResolveModelDims:
 
         assert runner.head_dim == 2688 // 32
 
-    def test_standard_mha(self) -> None:
+    def test_standard_attention(self) -> None:
         runner = self._resolve(
             {
                 "num_hidden_layers": 32,

@@ -1992,7 +1992,7 @@ class TestRunnerMlaProperties:
         runner = self._make_runner({"kv_lora_rank": 512})
         assert runner.is_mla is True
 
-    def test_is_mla_false_for_standard_mha(self) -> None:
+    def test_is_mla_false_for_standard_attention(self) -> None:
         runner = self._make_runner(
             {"num_hidden_layers": 32, "num_attention_heads": 32, "hidden_size": 4096}
         )
@@ -2240,7 +2240,7 @@ class TestMergeVerifyWindows:
     def test_false_by_default_without_opt_in(self) -> None:
         assert make_stub_runner().merge_verify_windows is False
 
-    def test_true_for_plain_mha_when_opted_in(self, monkeypatch) -> None:
+    def test_true_for_plain_attention_when_opted_in(self, monkeypatch) -> None:
         monkeypatch.setenv("VLLM_METAL_SPEC_VERIFY_WINDOW", "1")
         assert make_stub_runner().merge_verify_windows is True
 

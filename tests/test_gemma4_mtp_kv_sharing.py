@@ -584,7 +584,7 @@ def test_cache_policy_installs_gemma4_mtp_kv_sharing() -> None:
     assert runner._gemma4_mtp_assistant is installed
 
 
-def test_cache_policy_rejects_gemma4_mtp_without_mha_backend() -> None:
+def test_cache_policy_rejects_gemma4_mtp_without_sdpa_backend() -> None:
     runner = make_stub_runner(
         model_args=_target_args(),
         _gemma4_mtp_assistant=object(),
