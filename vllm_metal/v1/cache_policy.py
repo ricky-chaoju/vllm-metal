@@ -20,10 +20,8 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
 )
 
-from vllm_metal.attention.caches.mha_layout import (
-    MHAKVCacheLayout,
-    layer_addresses,
-)
+from vllm_metal.attention.caches.mha_layout import MHAKVCacheLayout
+from vllm_metal.attention.caches.placement import layer_addresses
 from vllm_metal.attention.caches.turboquant import (
     BLOCK_SIZE as TQ_BLOCK_SIZE,
 )

@@ -14,28 +14,14 @@ from typing import TypeAlias
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
-    KVCacheLayout,
     KVCacheTensor,
     SlidingWindowSpec,
 )
 
+from vllm_metal.attention.caches.placement import layer_addresses
+
 NO_SLIDING_WINDOW = -1
-# vLLM's name for the page order Metal stores: [block, token, head, dim].
-KV_CACHE_LAYOUT = KVCacheLayout.LBNHC.name
 StandardMHASpec: TypeAlias = FullAttentionSpec | SlidingWindowSpec
-
-
-def layer_addresses(tensor: KVCacheTensor) -> list[tuple[str, int]]:
-    """Return each layer's region start in the KV allocation.
-
-    vLLM overlays every cache group on one allocation and places layer ``l``
-    of a tensor at ``offset + l * layer_stride``; layers whose regions start at
-    the same address alias the same bytes (their groups own disjoint block ids).
-    """
-    return [
-        (layer_name, tensor.offset + position * tensor.layer_stride)
-        for position, layer_name in enumerate(tensor.layers)
-    ]
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,7 +13,7 @@ from vllm.config import CacheConfig
 from vllm.v1.attention.backends.utils import record_kv_cache_layout
 
 import vllm_metal.v1.model_runner as mr
-from vllm_metal.attention.caches.mha_layout import KV_CACHE_LAYOUT
+from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.attention.runtime.factory import build_hybrid_runtime_plan
 from vllm_metal.attention.runtime.hybrid_plan import (
     ATTENTION_LAYER,

@@ -27,7 +27,7 @@ from vllm.v1.outputs import (
 )
 from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase
 
-from vllm_metal.attention.caches.mha_layout import KV_CACHE_LAYOUT
+from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.config import get_config
 from vllm_metal.distributed import PipelineGroup
 from vllm_metal.platform import MetalPlatform

@@ -18,7 +18,7 @@ from vllm.v1.core.kv_cache_utils import (
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 
 from tests.stub_runner import make_gdn_hybrid_plan, make_stub_runner
-from vllm_metal.attention.caches.mha_layout import KV_CACHE_LAYOUT
+from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.config import MetalConfig
 from vllm_metal.platform import MetalPlatform
 from vllm_metal.v1.cache_policy import (

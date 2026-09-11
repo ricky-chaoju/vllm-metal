@@ -24,7 +24,7 @@ from vllm.v1.kv_cache_interface import (  # noqa: E402
 )
 
 from tests.stub_runner import make_stub_runner  # noqa: E402
-from vllm_metal.attention.caches.mha_layout import KV_CACHE_LAYOUT  # noqa: E402
+from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT  # noqa: E402
 from vllm_metal.attention.runtime.families.gdn import build_gdn_hybrid_plan
 from vllm_metal.config import AUTO_MEMORY_FRACTION, MetalConfig
 from vllm_metal.stt.policy import STT_SCHED_AVAILABLE_BYTES  # noqa: E402

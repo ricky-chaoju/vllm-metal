@@ -26,7 +26,8 @@ from vllm.v1.kv_cache_interface import (
 
 from tests.stub_runner import make_gemma4_mixed_mha_runner, make_stub_runner
 from vllm_metal.attention.caches.kv_cache import MetalPagedKVCache
-from vllm_metal.attention.caches.mha_layout import KV_CACHE_LAYOUT, MHAKVCacheLayout
+from vllm_metal.attention.caches.mha_layout import MHAKVCacheLayout
+from vllm_metal.attention.caches.placement import KV_CACHE_LAYOUT
 from vllm_metal.attention.impls.sdpa_wrapper import SDPAPagedAttentionWrapper
 from vllm_metal.attention.runtime.mha import (
     MHAPagedAttentionRuntime,
