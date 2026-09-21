@@ -500,10 +500,25 @@ class MetalPlatform(Platform):
                     "--additional-config '{\"turboquant\": true}'."
                 )
 
+        speculative_config = vllm_config.speculative_config
+        # First of the speculative rules: the others narrow how speculative
+        # decoding may be configured, this one says it cannot run at all.
+        # SpeculativeDecodeController.validate_supported() rejects every hybrid
+        # draft, so the first drafted step kills the engine core.
+        if (
+            speculative_config is not None
+            and model_config is not None
+            and model_config.is_hybrid
+        ):
+            raise NotImplementedError(
+                "vllm-metal does not support speculative decoding for hybrid "
+                "models: draft verification across recurrent state layers is "
+                "not implemented. Drop --speculative-config."
+            )
+
         # Upstream skips verify_equal_vocab_size_if_draft_model() when this is set,
         # so a draft model with a different vocabulary reaches the proposer, which
         # verifies draft ids against the target vocabulary with no mapping.
-        speculative_config = vllm_config.speculative_config
         if (
             speculative_config is not None
             and speculative_config.use_heterogeneous_vocab
@@ -576,16 +591,6 @@ class MetalPlatform(Platform):
                         f"mamba_cache_mode {state_family.supported_cache_modes}, "
                         f"not {cache_config.mamba_cache_mode!r}",
                     )
-            if (
-                cache_config.enable_prefix_caching
-                and vllm_config.speculative_config is not None
-            ):
-                cls._disable_hybrid_prefix_caching(
-                    vllm_config,
-                    "draft-state rollback across mamba state blocks "
-                    "(num_speculative_blocks) is not implemented for "
-                    "speculative decoding",
-                )
 
         # Pipeline parallelism is supported on Metal/MLX: each stage runs in its
         # own worker process and the inter-stage activations cross the

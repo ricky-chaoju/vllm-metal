@@ -1226,17 +1226,11 @@ class TestMetalPlatform:
         finally:
             reset_config()
 
-    def test_check_and_update_config_downgrades_default_hybrid_prefix_caching(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+    def test_check_and_update_config_rejects_hybrid_speculative_decoding(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Hybrid combinations Metal cannot serve downgrade APC, not reject.
-
-        vLLM 0.28.0 enables prefix caching by default for hybrid models and
-        resolves mamba_cache_mode='align' / mamba_block_size=block_size before
-        the platform hook runs; failing here would fail every default launch.
-        The downgrade restores the upstream APC-off resolution.
-        """
+        """Verification is not implemented for hybrid models, so the draft that
+        the proposer eventually produces would kill the engine core."""
         self._patch_stt_resolution(monkeypatch, is_stt=False)
         reset_config()
         try:
@@ -1244,27 +1238,67 @@ class TestMetalPlatform:
                 SimpleNamespace(
                     block_size=16,
                     kv_cache_dtype_skip_layers=[],
-                    enable_prefix_caching=True,
-                    mamba_cache_mode="align",
+                    enable_prefix_caching=False,
+                    mamba_cache_mode="none",
                     mamba_ssm_cache_dtype="float32",
                 ),
                 speculative_config=SimpleNamespace(
-                    use_heterogeneous_vocab=False,
-                    num_speculative_tokens=2,
+                    use_heterogeneous_vocab=False, num_speculative_tokens=2
                 ),
             )
-            # Upstream resolves mamba_block_size = block_size AFTER CacheConfig
-            # construction (models/config.py), so user_specified stays False.
-            vllm_config.cache_config.mamba_block_size = 16
-            assert vllm_config.cache_config.user_specified_mamba_block_size is False
-            MetalPlatform.check_and_update_config(vllm_config)
+            with pytest.raises(NotImplementedError) as exc_info:
+                MetalPlatform.check_and_update_config(vllm_config)
         finally:
             reset_config()
 
-        cache_config = vllm_config.cache_config
-        assert cache_config.enable_prefix_caching is False
-        assert cache_config.mamba_cache_mode == "none"
-        assert cache_config.mamba_block_size == 32768
+        assert str(exc_info.value) == (
+            "vllm-metal does not support speculative decoding for hybrid "
+            "models: draft verification across recurrent state layers is "
+            "not implemented. Drop --speculative-config."
+        )
+
+    def test_hybrid_speculative_rejection_precedes_the_other_spec_rules(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other speculative rules only narrow how it may be configured, so
+        a hybrid target must not be told to fix one of those first."""
+        self._patch_stt_resolution(monkeypatch, is_stt=False)
+        reset_config()
+        try:
+            vllm_config = self._hybrid_vllm_config(
+                SimpleNamespace(
+                    block_size=16,
+                    kv_cache_dtype_skip_layers=[],
+                    enable_prefix_caching=False,
+                    mamba_cache_mode="none",
+                    mamba_ssm_cache_dtype="float32",
+                ),
+                speculative_config=SimpleNamespace(
+                    use_heterogeneous_vocab=True, num_speculative_tokens=2
+                ),
+            )
+            vllm_config.scheduler_config.long_prefill_token_threshold = 2
+            vllm_config.scheduler_config.async_scheduling = True
+            with pytest.raises(NotImplementedError, match="for hybrid models"):
+                MetalPlatform.check_and_update_config(vllm_config)
+        finally:
+            reset_config()
+
+        # The async downgrade would otherwise log that it adjusted the config
+        # so speculative decoding can run, immediately before refusing it.
+        assert vllm_config.scheduler_config.async_scheduling is True
+
+    def test_check_and_update_config_accepts_non_hybrid_speculative_decoding(
+        self,
+    ) -> None:
+        """The hybrid rejection must not widen to ordinary paged models."""
+        vllm_config = self._dp_vllm_config()
+        vllm_config.parallel_config.data_parallel_size = 1
+        vllm_config.speculative_config = SimpleNamespace(
+            use_heterogeneous_vocab=False, num_speculative_tokens=2
+        )
+
+        MetalPlatform.check_and_update_config(vllm_config)
 
     def test_hybrid_prefix_caching_downgrade_rejects_user_mamba_block_size(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1287,9 +1321,7 @@ class TestMetalPlatform:
                     mamba_block_size=64,
                     mamba_ssm_cache_dtype="float32",
                 ),
-                speculative_config=SimpleNamespace(
-                    use_heterogeneous_vocab=False, num_speculative_tokens=2
-                ),
+                model_type="nemotron_h",
             )
             assert vllm_config.cache_config.user_specified_mamba_block_size is True
             with pytest.raises(NotImplementedError, match="mamba-block-size"):

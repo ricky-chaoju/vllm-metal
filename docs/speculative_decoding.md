@@ -21,7 +21,10 @@ All three methods currently have these Metal-specific constraints:
 - Scheduling must be synchronous. The Metal platform disables async scheduling
   when speculative decoding is configured.
 - Pipeline parallelism is not supported with speculative decoding.
-- Hybrid GDN targets and heterogeneous draft vocabularies are not supported.
+- Hybrid targets are rejected at startup: draft verification across recurrent
+  state layers is not implemented
+  ([#610](https://github.com/vllm-project/vllm-metal/issues/610)).
+- Heterogeneous draft vocabularies are not supported.
 - `long_prefill_token_threshold`, when set, must be at least
   `1 + num_speculative_tokens`.
 
