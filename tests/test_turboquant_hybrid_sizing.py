@@ -8,7 +8,7 @@ from unittest.mock import patch
 import mlx.core as mx
 import pytest
 import torch
-from vllm.config import CacheConfig
+from vllm.config import AttentionConfig, CacheConfig
 from vllm.model_executor.models import ModelRegistry
 from vllm.v1.attention.backends.utils import record_kv_cache_layout
 from vllm.v1.core.kv_cache_utils import (
@@ -169,6 +169,7 @@ class TestTurboQuantHybridAlignment:
         return SimpleNamespace(
             # vLLM 0.29.0 annotates EAGLE groups from speculative_config.
             speculative_config=None,
+            attention_config=AttentionConfig(),
             model_config=SimpleNamespace(
                 is_hybrid=True,
                 architecture="StubHybridForCausalLM",

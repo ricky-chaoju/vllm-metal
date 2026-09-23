@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 import pytest
 import torch
+from vllm.config import AttentionConfig
 from vllm.model_executor.models import ModelRegistry
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 from vllm.v1.core.kv_cache_utils import (
@@ -149,6 +150,7 @@ def test_upstream_scheduler_groups_adopt_conv_names_and_shared_state_pools(lfm_m
         scheduler_config=runner.scheduler_config,
         kv_transfer_config=None,
         speculative_config=None,
+        attention_config=AttentionConfig(),
     )
     groups = get_kv_cache_groups(engine_config, runner.get_kv_cache_spec())
     scheduler_cache = get_kv_cache_config_from_groups(

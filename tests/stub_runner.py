@@ -9,7 +9,7 @@ from typing import Any
 
 import mlx.core as mx
 import torch
-from vllm.config import CacheConfig
+from vllm.config import AttentionConfig, CacheConfig
 from vllm.v1.attention.backends.utils import record_kv_cache_layout
 
 import vllm_metal.v1.model_runner as mr
@@ -81,6 +81,7 @@ def initialize_hybrid_runtime(
     )
     config = SimpleNamespace(
         speculative_config=None,
+        attention_config=AttentionConfig(),
         cache_config=make_cache_config(
             block_size=block_size, num_gpu_blocks_override=num_blocks
         ),
@@ -268,6 +269,7 @@ def make_gemma4_mixed_attention_runner(
     )
     vllm_config = SimpleNamespace(
         speculative_config=None,
+        attention_config=AttentionConfig(),
         max_in_flight_tokens=max_in_flight_tokens,
         model_config=SimpleNamespace(
             max_model_len=max_model_len,

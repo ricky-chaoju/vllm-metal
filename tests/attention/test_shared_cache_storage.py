@@ -7,6 +7,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 import torch
+from vllm.config import AttentionConfig
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
@@ -177,7 +178,10 @@ def test_budget_above_buffer_limit_uses_shared_regions(monkeypatch):
     monkeypatch.setattr(
         "vllm_metal.attention.caches.storage.torch_to_mlx", import_region
     )
-    config = SimpleNamespace(cache_config=make_cache_config(gpu_memory_utilization=0.5))
+    config = SimpleNamespace(
+        attention_config=AttentionConfig(),
+        cache_config=make_cache_config(gpu_memory_utilization=0.5),
+    )
     runner = SimpleNamespace(
         is_hybrid=True,
         scheduler_memory_reporting_mode=lambda: "paged_attention_layout_budget",
