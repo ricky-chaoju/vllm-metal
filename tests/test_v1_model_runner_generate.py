@@ -4204,7 +4204,7 @@ class TestStateBlockIdLifecycle:
                 req_ids=["r"],
                 resumed_req_ids={"r"},
                 new_token_ids=[],
-                all_token_ids={},
+                all_token_ids={"r": [1]},
                 new_block_ids=[([50], [60], [70], [80])],
                 num_computed_tokens=[0],
                 num_output_tokens=[0],

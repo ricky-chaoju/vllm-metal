@@ -333,14 +333,15 @@ class TestCachedRequestBlockUpdates:
             new_block_ids=[([7, 8],)],
             resumed_req_ids={"req-1"},
             new_token_ids=[],
-            all_token_ids={},
-            num_computed_tokens=[4],
+            all_token_ids={"req-1": [10, 20, 30, 40]},
+            num_computed_tokens=[0],
             num_output_tokens=[0],
         )
 
         runner._update_cached_request_blocks(cached_reqs)
 
         state = runner._request_states["req-1"]
+        assert state.token_ids == [10, 20, 30, 40]
         assert state.block_ids == [[7, 8]]
         assert state.generated_tokens == 0
         assert "req-1" not in runner._paged_request_seq_lens
