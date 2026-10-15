@@ -4518,3 +4518,13 @@ class TestPreemptedReadmission:
 
         assert entry.prefill.token_ids == [7, 8, 9, 10]
         assert entry.result_mode == "new_final"
+
+    def test_non_last_pp_stage_keeps_the_prefill_tokens(self) -> None:
+        runner = make_stub_runner()
+        new_req = self._new_req([1, 2, 3, 4, 5, 6], num_computed_tokens=5)
+
+        runner._update_pp_stage_states(self._scheduler_output(new_req, 1))
+
+        state = runner._request_states["r"]
+        assert state.token_ids == [1, 2, 3, 4, 5, 6]
+        assert state.prompt_len == 4

@@ -2765,10 +2765,12 @@ class MetalModelRunner:
         updated later from cached scheduler metadata.
         """
         for new_req in scheduler_output.scheduled_new_reqs:
-            token_ids = list(new_req.prompt_token_ids or [])
+            token_ids = list(
+                new_req.prefill_token_ids or new_req.prompt_token_ids or []
+            )
             self._request_states[new_req.req_id] = RequestState(
                 token_ids=token_ids,
-                prompt_len=len(token_ids),
+                prompt_len=new_req.prompt_len,
                 sampling_params=new_req.sampling_params or SamplingParams(),
                 pooling_params=new_req.pooling_params,
                 block_ids=(
