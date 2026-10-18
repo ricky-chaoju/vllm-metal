@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   parity:
-    name: ${{ matrix.os }} probe=${{ matrix.probe }} rep=${{ matrix.rep }}
+    name: ${{ matrix.os }} mp=${{ matrix.mp }} rep=${{ matrix.rep }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     permissions:
@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-15, macos-26]
-        probe: ['1', '0']
+        mp: ['1', '0']
         rep: [1, 2, 3, 4]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
@@ -27,7 +27,7 @@ jobs:
       GLOO_SOCKET_IFNAME: lo0
       MODEL_ID: Qwen/Qwen3.5-0.8B
       MODEL_REVISION: 2fc06364715b967f1860aea9cf38778875588b17
-      VLLM_METAL_KV_COMMIT_PROBE: ${{ matrix.probe }}
+      VLLM_ENABLE_V1_MULTIPROCESSING: ${{ matrix.mp }}
     defaults:
       run:
         shell: bash
@@ -56,7 +56,7 @@ jobs:
               print(f"MODEL_PATH={model}", file=f)
           PY
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
-        if: success() && steps.models.outputs.cache-hit != 'true' && matrix.rep == 1 && matrix.probe == '1'
+        if: success() && steps.models.outputs.cache-hit != 'true' && matrix.rep == 1 && matrix.mp == '1'
         continue-on-error: true
         with:
           path: ~/.cache/huggingface/hub
@@ -70,6 +70,7 @@ jobs:
         run: |
           source .venv-vllm-metal/bin/activate
           (while true; do printf '%s ' "$(date +%T)"; vm_stat | awk '/Pages free|compressor|Pageouts|Swapouts|Swapins/{printf "%s=%s ", $(NF-1), $NF}'; echo; sleep 10; done) > "$RUNNER_TEMP/parity/vmstat.log" 2>&1 &
+          (while true; do date +%T; ps -axo rss=,command= | sort -rn | head -6 | cut -c1-160; sleep 15; done) > "$RUNNER_TEMP/parity/rss.log" 2>&1 &
           python tools/check_parity.py --model "$MODEL_PATH" --top-k 5 --max-tokens 20 \
             --batch-size 1 2 --output-dir "$RUNNER_TEMP/parity" \
             --gpu-memory-utilization "$PARITY_GPU_MEMORY_UTILIZATION"
@@ -81,6 +82,6 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: exp-${{ matrix.os }}-probe${{ matrix.probe }}-rep${{ matrix.rep }}
+          name: exp-${{ matrix.os }}-mp${{ matrix.mp }}-rep${{ matrix.rep }}
           path: ${{ runner.temp }}/parity
           retention-days: 7
