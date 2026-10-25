@@ -16,6 +16,8 @@ skeleton (``output`` -> ``lm_head``), and a live-derived map built by inverting
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 import mlx.core as mx
@@ -59,15 +61,52 @@ class _NegatedExp:
         return mx.log(-source)
 
 
+@dataclass(frozen=True)
+class GGUFArchSpec:
+    """How llama.cpp stores one supported GGUF arch relative to mlx-lm."""
+
+    # Config model_types (besides the arch name) that llama.cpp converts here.
+    config_model_types: frozenset[str] = frozenset()
+    # Out-of-scope substrings this arch's own tensors carry.
+    admitted_substrings: frozenset[str] = frozenset()
+    # Live parameter name -> the name llama.cpp converts it under.
+    param_aliases: Mapping[str, str] = field(default_factory=dict)
+    # Per-layer GGUF tensor -> how llama.cpp changed its layout or values.
+    layer_transforms: Mapping[str, GGUFPlainTransform] = field(default_factory=dict)
+    # q/k rows stored in llama.cpp's interleaved RoPE layout.
+    rope_permuted_qk: bool = False
+    # Gated DeltaNet V heads tiled across the K heads instead of grouped.
+    tiled_v_heads: bool = False
+
+
 class GGUFModelAdapter:
     """Own GGUF name/scope policy: translate tensor names to live MLX-LM
     parameter paths, and the per-arch weight-layout policy (which tensors need
     llama.cpp's row, column or value layout undone, and the index or transform)."""
 
-    # Architectures this loader is verified against. The scope guard is an
-    # allowlist (default-deny), so an untested arch is never silently admitted;
-    # grow this set as archs are tested.
-    SUPPORTED_ARCHS = frozenset({"qwen2", "qwen3", "llama", "qwen35"})
+    # Archs this loader is verified against, each with every rule it needs. The
+    # scope guard is an allowlist (default-deny), so an untested arch is never
+    # silently admitted. MistralForCausalLM converts under llama; a .gguf
+    # declaring a raw "mistral" or "qwen3_5" arch is not a llama.cpp product.
+    _ARCH_SPECS: Mapping[str, GGUFArchSpec] = {
+        "qwen2": GGUFArchSpec(),
+        "qwen3": GGUFArchSpec(),
+        "llama": GGUFArchSpec(
+            config_model_types=frozenset({"mistral"}), rope_permuted_qk=True
+        ),
+        "qwen35": GGUFArchSpec(
+            config_model_types=frozenset({"qwen3_5"}),
+            admitted_substrings=frozenset({"attn_qkv", "ssm_"}),
+            param_aliases={"dt_bias": "dt_proj.bias"},
+            layer_transforms={
+                "ssm_a": _NegatedExp(),
+                "ssm_conv1d.weight": _SqueezedUnitAxis(),
+            },
+            tiled_v_heads=True,
+        ),
+    }
+
+    SUPPORTED_ARCHS = frozenset(_ARCH_SPECS)
 
     # Substrings flagging an out-of-scope tensor: fused QKV, SSM/Mamba, MoE
     # experts + router, vision/mmproj. Defense in depth behind the arch
@@ -86,10 +125,6 @@ class GGUFModelAdapter:
         "v.patch",
     )
 
-    # arch -> the out-of-scope substrings its own tensors carry (a qwen35 Gated
-    # DeltaNet layer stores a fused attn_qkv and ssm_* tensors).
-    _ARCH_TO_ADMITTED_SUBSTRINGS = {"qwen35": frozenset({"attn_qkv", "ssm_"})}
-
     # GGUF globals whose MLX target has no live parameter to invert from on a tied
     # model (``output`` -> ``lm_head``), so they translate independently of the
     # live parameter tree. The only load-bearing override for every supported arch.
@@ -101,33 +136,6 @@ class GGUFModelAdapter:
 
     # GGUF tensors with no MLX-LM counterpart (precomputed buffers MLX recreates).
     _KNOWN_SKIP = frozenset({"rope_freqs.weight"})
-
-    # Live parameter name -> the name llama.cpp converts it under, which is the
-    # one gguf-py's map knows.
-    _PARAM_NAME_TO_CONVERTED_NAME = {"dt_bias": "dt_proj.bias"}
-
-    # Per-layer GGUF tensor -> how llama.cpp's SSM converters change it.
-    _LAYER_TENSOR_TO_PLAIN_TRANSFORM: dict[str, GGUFPlainTransform] = {
-        "ssm_a": _NegatedExp(),
-        "ssm_conv1d.weight": _SqueezedUnitAxis(),
-    }
-
-    # Archs whose q/k projection weights are stored in llama.cpp's RoPE layout and
-    # must be row-un-permuted at load (llama family). qwen2/qwen3 use the HF layout
-    # and are absent here. mistral (a llama-arch family) maps to "llama".
-    _ROPE_PERMUTE_ARCHS = frozenset({"llama"})
-
-    # Archs whose Gated DeltaNet V heads llama.cpp tiles across the K heads
-    # instead of grouping them per K head, as the mlx-lm layout does.
-    _V_HEAD_TILED_ARCHS = frozenset({"qwen35"})
-
-    # config model_type -> the GGUF arch llama.cpp converts that family under
-    # (MistralForCausalLM converts under MODEL_ARCH.LLAMA, and mlx-lm builds
-    # "mistral" configs through its llama module). Applied to the CONFIG side
-    # only: a .gguf declaring a raw "mistral" or "qwen3_5" arch is not a
-    # llama.cpp product and stays allowlist-rejected, as do the multimodal
-    # "mistral3"/"mistral4".
-    _CONFIG_MODEL_TYPE_TO_GGUF_ARCH = {"mistral": "llama", "qwen3_5": "qwen35"}
 
     def __init__(
         self,
@@ -200,7 +208,7 @@ class GGUFModelAdapter:
     @classmethod
     def is_out_of_scope_tensor(cls, gguf_name: str, arch: str) -> bool:
         """Whether ``gguf_name`` has an out-of-scope substring ``arch`` does not admit."""
-        admitted = cls._ARCH_TO_ADMITTED_SUBSTRINGS.get(arch, frozenset())
+        admitted = cls._ARCH_SPECS[arch].admitted_substrings
         return any(
             substring in gguf_name
             for substring in cls.OUT_OF_SCOPE_TENSOR_SUBSTRINGS
@@ -227,6 +235,7 @@ class GGUFModelAdapter:
         real attribute path on the freshly built skeleton (including any family
         prefix), then maps each to its GGUF name via the ``gguf`` package.
         """
+        spec = cls._ARCH_SPECS[arch]
         arch_enum = cls._resolve_arch_enum(gguf, arch)
         if arch_enum is None:  # pragma: no cover - allowlisted archs always resolve
             raise GGUFLoadError(f"Unknown GGUF architecture {arch!r}.")
@@ -235,7 +244,7 @@ class GGUFModelAdapter:
         params = cast("list[tuple[str, Any]]", tree_flatten(model.parameters()))
         for mlx_name, _ in params:
             gguf_name = name_map.get_name(
-                cls._converted_name(mlx_name), try_suffixes=(".weight", ".bias")
+                cls._converted_name(mlx_name, spec), try_suffixes=(".weight", ".bias")
             )
             if gguf_name is not None:
                 reverse.setdefault(gguf_name, mlx_name)
@@ -248,36 +257,37 @@ class GGUFModelAdapter:
         translation_map.update(cls._STATIC_GLOBAL_OVERRIDE)
         for name in cls._KNOWN_SKIP:
             translation_map[name] = None
-        v_head_rows, v_head_columns = cls._build_v_head_index(model, arch)
+        v_head_rows, v_head_columns = (
+            cls._build_v_head_index(model) if spec.tiled_v_heads else ({}, {})
+        )
+        rope_rows = (
+            cls._build_permute_index(model, num_hidden_layers)
+            if spec.rope_permuted_qk
+            else {}
+        )
         return cls(
             translation_map=translation_map,
-            permute_index={
-                **cls._build_permute_index(model, arch, num_hidden_layers),
-                **v_head_rows,
-            },
+            permute_index={**rope_rows, **v_head_rows},
             column_index=v_head_columns,
             plain_transforms={
                 f"blk.{i}.{tensor}": transform
                 for i in range(num_hidden_layers)
-                for tensor, transform in cls._LAYER_TENSOR_TO_PLAIN_TRANSFORM.items()
+                for tensor, transform in spec.layer_transforms.items()
             },
         )
 
     @classmethod
     def _build_permute_index(
-        cls, model: nn.Module, arch: str, num_hidden_layers: int
+        cls, model: nn.Module, num_hidden_layers: int
     ) -> dict[str, mx.array]:
         """Precompute the RoPE row-permutation index per q/k GGUF tensor name.
 
-        Empty for archs in the HF RoPE layout (qwen). For llama-family archs the
-        index reorders each head's interleaved pairs back to the HF half-split.
+        The index reorders each head's interleaved pairs back to the HF half-split.
         ``out_features`` is read off the BUILT q/k projections (whose head_dim is
         already resolved), not ``args.head_dim`` which stays ``None`` when the
         config omits it (the #449 omitted-default trap). llama.cpp permutes both
         the q/k weight AND its bias, so the same index covers ``.bias``.
         """
-        if arch not in cls._ROPE_PERMUTE_ARCHS:
-            return {}
         args = model.args
         attn = model.model.layers[0].self_attn
         idx_q = cls._rope_permute_index(
@@ -296,7 +306,7 @@ class GGUFModelAdapter:
 
     @classmethod
     def _build_v_head_index(
-        cls, model: nn.Module, arch: str
+        cls, model: nn.Module
     ) -> tuple[dict[str, mx.array], dict[str, mx.array]]:
         """Precompute the rows and ``ssm_out`` columns that regroup tiled V heads.
 
@@ -306,8 +316,6 @@ class GGUFModelAdapter:
         """
         rows: dict[str, mx.array] = {}
         columns: dict[str, mx.array] = {}
-        if arch not in cls._V_HEAD_TILED_ARCHS:
-            return rows, columns
         for i, layer in enumerate(model.model.layers):
             if "linear_attn" not in layer:
                 continue
@@ -360,11 +368,11 @@ class GGUFModelAdapter:
             .reshape(-1)
         )
 
-    @classmethod
-    def _converted_name(cls, mlx_name: str) -> str:
+    @staticmethod
+    def _converted_name(mlx_name: str, spec: GGUFArchSpec) -> str:
         """Return the name llama.cpp converts a live parameter under."""
         module_path, _, param_name = mlx_name.rpartition(".")
-        converted = cls._PARAM_NAME_TO_CONVERTED_NAME.get(param_name)
+        converted = spec.param_aliases.get(param_name)
         return mlx_name if converted is None else f"{module_path}.{converted}"
 
     @staticmethod
@@ -374,8 +382,11 @@ class GGUFModelAdapter:
     @classmethod
     def _config_model_type_to_gguf_arch(cls, model_type: str) -> str:
         """Map a config ``model_type`` to the GGUF arch its family converts under."""
-        arch = cls._normalize_arch(model_type)
-        return cls._CONFIG_MODEL_TYPE_TO_GGUF_ARCH.get(arch, arch)
+        model_type = cls._normalize_arch(model_type)
+        for arch, spec in cls._ARCH_SPECS.items():
+            if model_type in spec.config_model_types:
+                return arch
+        return model_type
 
     @classmethod
     def _resolve_arch_enum(cls, gguf: Any, arch: str) -> Any | None:
