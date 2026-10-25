@@ -8,8 +8,6 @@
 // Library caching
 // ---------------------------------------------------------------------------
 
-static std::string v2_paged_attention_source_;
-
 std::atomic<PagedDispatch> g_last_dispatch{PagedDispatch::None};
 std::atomic<int> g_last_gqa_partition{0};
 std::atomic<int> g_last_gqa_requests{0};
@@ -184,14 +182,6 @@ int gqa_decode_plan_for_lengths(
       ? partition : 0;
 }
 
-void init_v2_library(const std::string& v2_src) {
-  v2_paged_attention_source_ = v2_src;
-  auto& d = metal::device(Device::gpu);
-  d.get_library(
-      "paged_attention_v2_kern",
-      [&]() { return v2_paged_attention_source_; });
-}
-
 // Load a precompiled .metallib instead of compiling its source. Uses MLX's
 // get_library(name, path) overload, which loads the library at `path` and
 // caches it under `name`; a later dispatch's get_library(name) (no path) then
@@ -206,16 +196,8 @@ void init_library_path(const std::string& name, const std::string& path) {
 // NAX (M5 tensor-unit) prefill kernel support
 // ---------------------------------------------------------------------------
 
-static std::string nax_source_;
 bool nax_lib_ready_ = false;   // a NAX library was registered
 bool nax_enabled_ = true;      // test / A-B switch
-
-void init_nax_library(const std::string& nax_src) {
-  nax_source_ = nax_src;
-  auto& d = metal::device(Device::gpu);
-  d.get_library("paged_attention_nax_kern", [&]() { return nax_source_; });
-  nax_lib_ready_ = true;
-}
 
 void init_nax_library_path(const std::string& path) {
   init_library_path("paged_attention_nax_kern", path);

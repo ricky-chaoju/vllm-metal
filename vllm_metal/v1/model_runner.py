@@ -139,6 +139,7 @@ from vllm_metal.v1.spec_decode import (
 from vllm_metal.v1.structured_output import MetalStructuredOutputApplier
 
 if TYPE_CHECKING:
+    from vllm_metal.moe_offload import ExpertStore
     from vllm_metal.patches.aux_hidden_states import AuxHiddenStateCapture
     from vllm_metal.v1.kv_offload.connector import MetalOffloadingConnector
 
@@ -375,6 +376,7 @@ class MetalModelRunner:
     # paths that check connector state.
     _kv_connector_driver: KVConnector | None = None
     _kv_step_finished_req_ids: set[str] | None = None
+    _expert_store: "ExpertStore | None" = None
 
     def __init__(self, vllm_config: VllmConfig):
         """Initialize model runner.
@@ -1002,6 +1004,10 @@ class MetalModelRunner:
     def tq_prefill_workspace_bytes(self) -> int:
         return self._cache_policy.tq_prefill_workspace_bytes
 
+    @property
+    def moe_expert_reserved_bytes(self) -> int:
+        return 0 if self._expert_store is None else self._expert_store.reserved_bytes
+
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """Get KV cache specification.
 
@@ -1180,6 +1186,11 @@ class MetalModelRunner:
         mx.synchronize()
         overhead = mx.get_cache_memory() - cache_before
         mx.set_cache_limit(overhead)
+        if self._expert_store is not None:
+            # The dummy batch routes every token to the same top_k experts,
+            # so profiling sees little of the expert memory. The plan reserves
+            # it instead; start serving from an empty cache.
+            self._expert_store.clear()
         return overhead
 
     def _mm_step_can_run(self, adapter: MultimodalRuntimeAdapter) -> bool:

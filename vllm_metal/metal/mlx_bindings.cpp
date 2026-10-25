@@ -205,21 +205,9 @@ NB_MODULE(_paged_ops, m) {
         "The tiled-prefill kernel's (BQ, TILE_KV) tile config for a head "
         "size, or None when that head size has no tiled instantiation.");
 
-  m.def("init_v2_library", &init_v2_library,
-        nb::arg("v2_src"),
-        "JIT-compile the v2 online-softmax Metal shader.");
-
   m.def("init_library_path", &init_library_path,
         nb::arg("name"), nb::arg("path"),
         "Load a precompiled .metallib from disk, cached under `name`.");
-
-  m.def("init_gdn_library", &init_gdn_library,
-        nb::arg("gdn_src"),
-        "JIT-compile the GDN linear attention Metal shader.");
-
-  m.def("init_nax_library", &init_nax_library,
-        nb::arg("nax_src"),
-        "JIT-compile the NAX prefill attention Metal shader.");
 
   m.def("init_nax_library_path", &init_nax_library_path,
         nb::arg("path"),
@@ -524,10 +512,6 @@ NB_MODULE(_paged_ops, m) {
         "Lazy GDN recurrence returning (y, updated_state_pool). Only the "
         "state output aliases its input. Callers must use both returned "
         "handles so output reads and state reuse depend on the native writes.");
-
-  m.def("init_mla_library", &init_mla_library,
-        nb::arg("src"),
-        "JIT-compile the MLA paged attention Metal shader (RFC #360).");
 
   m.def("mla_paged_attention_primitive", &mla_paged_attention_primitive_fn,
         nb::arg("q_nope"), nb::arg("q_pe"),
